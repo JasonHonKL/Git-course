@@ -837,6 +837,68 @@ pre.term .o {
   min-height: 1.4em;
 }
 
+/* ---------- 60-second hands-on ---------- */
+.tryit {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  padding: 15px 18px;
+  margin: 26px 0;
+  background: var(--surface);
+}
+
+.tryit-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.tryit-head .label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.tryit-head .t {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.tryit p {
+  font-size: 14.5px;
+  color: var(--text-2);
+  margin: 0 0 10px;
+}
+
+.tryit p.tryit-note {
+  margin: 10px 0 0;
+  font-size: 13.5px;
+}
+
+.tryit pre.term {
+  margin: 8px 0;
+  font-size: 12.5px;
+}
+
+.tryit details {
+  margin: 4px 0 0;
+}
+
+.tryit details summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding: 4px 0;
+}
+
 /* ---------- gate: MC ---------- */
 .gate {
   margin: 34px 0 8px;
