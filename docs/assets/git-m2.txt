@@ -1,0 +1,5 @@
+add 只做两件事：把文件内容写成 blob，把路径、哈希和 stat 写进索引。tree 和 commit 还没有出现。
+
+commit 有五步：refresh 索引，写 tree，写 commit，移动引用，追加 reflog。
+
+对象只增不改，会动的是引用。提交失败时，对象可能已经落盘，但分支没动，它就成了 fsck 能找到的孤立对象。

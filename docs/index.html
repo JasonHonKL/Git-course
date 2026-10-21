@@ -1,0 +1,2639 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Git 内部结构 · 从上到下读 git/git</title>
+<meta name="description" content="一门从可观察行为出发、逐层打开 Git 内部的互动课程：对象库、索引、引用、打包与真实源码实验。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23b83a1f'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="lab.css">
+</head>
+<body>
+<header class="topnav">
+  <div class="brand"><span class="brand-mark"></span>Git 内部结构</div>
+  <div class="navmeta">git/git @ 47fdf22 · 6 模块 · 5+1 实验 · ≈226 分钟</div>
+  <nav class="navlinks" aria-label="课程导航">
+    <a href="#m1">开始</a>
+    <a href="#m2">追踪</a>
+    <a href="#m3">对象</a>
+    <a href="#m5">引用</a>
+    <a href="#reading">继续读</a>
+  </nav>
+</header>
+<div class="progress-track" aria-hidden="true"><div class="progress-bar" id="progressBar"></div></div>
+
+<div class="shell">
+  <aside class="rail" aria-label="小节导航">
+    <p class="rail-kicker">课程地图</p>
+    <ul class="rail-list" id="railList"></ul>
+    <div class="rail-foot">
+      <div>当前之后</div>
+      <div class="rail-next" id="railNext">向下滚动开始</div>
+    </div>
+  </aside>
+  <main id="main">
+<div class="wrap">
+<section class="hero">
+  <p class="eyebrow">自上而下 · 真实源码 · 中文</p>
+  <h1>Git 到底在磁盘上<br>做了什么？</h1>
+  <p class="lede">不从哈希函数讲起，也不从“版本控制的概念”讲起。我们从你敲下 <code>git commit</code> 之后，<code>.git</code> 里多出的那几个文件开始，一路打开对象库、索引和引用。</p>
+  <div class="meta-row">
+    <span><strong>6</strong> 个模块</span>
+    <span><strong>12</strong> 个小节</span>
+    <span><strong>5</strong> 个核心实验 <em>+1 扩展</em></span>
+    <span><strong>≈226</strong> 分钟</span>
+    <span>轨道：<strong>Deep Diver</strong></span>
+  </div>
+
+  <div class="hero-grid">
+    <div class="video-block">
+      <video controls preload="metadata" poster="assets/git-main-poster.jpg" aria-label="课程主讲解视频：一次 commit 在 Git 内部走过的路径">
+        <source src="assets/git-main.mp4" type="video/mp4">
+        你的浏览器不支持视频标签。可以打开 <code>course/assets/git-main.mp4</code>。
+      </video>
+      <figcaption><span>主片 · 86 秒 · 中文旁白</span><span>第 2、5 模块另有短片</span></figcaption>
+    </div>
+    <div class="start-card">
+      <h2>开始之前</h2>
+      <p>课程页面只读；实验在真实文件里做。先确认本地二进制能用：</p>
+      <ol>
+        <li>在课程根目录运行 <code>node course/serve.mjs</code></li>
+        <li>打开 <code>http://localhost:4173</code></li>
+        <li>实验前运行 <code>node course/lab.mjs status</code></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" style="padding-top:34px">
+  <figure class="diagram">
+    <div class="diagram-note">课程地图</div>
+    <div class="mermaid">
+flowchart LR
+  A["可观察行为<br/>commit 之后多了什么"] --> B["跟着一次 add/commit 走"]
+  B --> C["对象库<br/>blob / tree / commit"]
+  C --> D["索引<br/>DIRC 与 stat 缓存"]
+  D --> E["引用与可达性<br/>refs / reflog / gc"]
+  E --> F["打包与传输<br/>pack / clone"]
+  A -.-> L0["Lab 0<br/>手搭 .git"]
+  B -.-> L1["Lab 1<br/>手工造 commit"]
+  C -.-> L2["Lab 2<br/>加一个 builtin"]
+  D -.-> L4["Lab 4<br/>解析 index"]
+  E -.-> L3["Lab 3<br/>找回丢失提交"]
+  F -.-> L6["Lab 6（可选）<br/>读 pack"]
+    </div>
+    <figcaption>先看整台机器，再依次打开四个盒子；六个实验分别落在对应模块之后，Lab 6 是可选扩展。</figcaption>
+    <details><summary>图源</summary><pre>flowchart LR ...（见页面源码）</pre></details>
+  </figure>
+
+  <div class="callout">
+    <span class="label">一句话模型</span>
+    <p>Git 是一个<strong>内容寻址的对象库</strong>（不可变，按内容哈希取名），加一层<strong>可变的引用</strong>（分支、HEAD、reflog），中间用<strong>索引</strong>把工作区与下一次提交连接起来。后面每一节都在展开这句话里的一个词。</p>
+  </div>
+
+  <h3 style="font-family:var(--display);font-size:22px;margin:30px 0 8px">怎么用这门课</h3>
+  <p>每个小节都是同一个节奏：一张图 → 两段解释 → 一个微检查 → 3 道选择题（逐项反馈）→ 一道简答（本地保存，可看参考答案）。有实验的小节，实验排在最后，不挡进度。</p>
+  <p>小节标题旁的“阅读 ≈7 分钟 · 检查 ≈5 分钟”就是字面意思：读懂这一节大约 7 分钟，做完选择题和简答大约 5 分钟。实验时间单独计算，不藏在阅读时间里。</p>
+  <p>时间预算是规划工具，不是倒计时。看不懂就停下来读源码；源码在 <code>git-src/</code>，行号会随课程给出，但以你本地的文件为准。</p>
+  <p>代码块里的 <code>...</code> 表示省略行；保留的行与仓库原文一致，没有改写。</p>
+</section>
+</div>
+
+<section class="module" id="m1" data-num="1" data-title="整台机器">
+<div class="wrap">
+  <header class="module-head">
+    <div class="module-num">01</div>
+    <h2>整台机器</h2>
+    <p class="lede">先不打开任何盒子。我们只做一件事：提交一次，然后盯着 <code>.git</code> 看它多了什么、变了什么。再把产生这些变化的命令入口找出来。</p>
+  </header>
+
+  <section class="section" id="s1-1" data-title="1.1 一次 commit，磁盘上多了什么" data-read="7" data-check="5" data-next="下一节：命令是怎么被接住的">
+    <span class="section-label">模块 1 · 小节 1</span>
+    <h3>一次 commit，磁盘上多了什么？</h3><span class="timechip">阅读 ≈7 分钟 · 检查 ≈5 分钟</span>
+
+    <div class="screen prose">
+      <p>在一个只有两个文件的仓库里提交一次，然后问 Git 要它的原始内容：</p>
+      <pre class="term"><span class="p">$</span> git log -1 --oneline
+<span class="o">a1b2c3d add hello.txt</span>
+<span class="p">$</span> git cat-file -p HEAD
+<span class="o">tree 07ed5a7aebb914e3a02edf6d622b82d364037e3c
+parent 9fceb02d0ae598e95dc970b74767f19372d61af8
+author A U Thor &lt;a@example.com&gt; 1767225600 +0000
+committer A U Thor &lt;a@example.com&gt; 1767225600 +0000
+
+add hello.txt</span></pre>
+      <p>注意最后一段：<code>git cat-file -p</code> 把对象<strong>解压后原样</strong>打印出来。commit 不是什么二进制黑盒，它是一段带头的纯文本。文件内容不在里面，只有一个 <code>tree</code> 的哈希。</p>
+      <p class="muted" style="font-size:14px">第一次见这些词：<abbr class="term" tabindex="0" data-def="blob：保存文件内容的 Git 对象，只由内容（加类型与长度头）命名，不记录文件名。">blob</abbr> 存内容，<abbr class="term" tabindex="0" data-def="tree：保存一个目录的 Git 对象；每个条目是模式、类型、OID 和名字。目录嵌套就是 tree 套 tree。">tree</abbr> 存目录结构。</p>
+    </div>
+
+    <figure class="diagram">
+      <div class="diagram-note">一次提交的四个落点</div>
+      <div class="mermaid">
+flowchart LR
+  W["工作区<br/>hello.txt 的实际字节"] -->|"git add"| I["索引<br/>.git/index"]
+  I -->|"git commit"| T["tree 对象<br/>目录快照"]
+  T --> C["commit 对象<br/>tree + parent + 作者 + 信息"]
+  C --> R["引用<br/>refs/heads/main"]
+  R -.->|"下一次提交的 parent"| C
+      </div>
+      <figcaption>要盯住的不是箭头，而是两边的性质：左边是可变的工作区，右边是不可变的对象，只有引用可以移动。</figcaption>
+      <details><summary>图源</summary><pre>flowchart LR
+  W -->|git add| I
+  I -->|git commit| T
+  T --> C
+  C --> R
+  R -.->|下一次提交的 parent| C</pre></details>
+    </figure>
+
+    <div class="prose">
+      <p>对象的“名字”是内容哈希：同样的字节永远得到同样的名字，改一个字节就得到一个全新的对象。引用则相反，它只是一个文件，里面写着一行十六进制；移动分支，就是改写这一行。</p>
+      <p>这也解释了一个常见困惑：<code>git commit --amend</code> 并没有改掉旧提交。它造了一个新对象，然后把分支引用指过去；旧对象还在，直到 <code>gc</code> 发现没人引用它。</p>
+    </div>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">预测</span>只改提交信息（<code>git commit --amend -m "new"</code>），commit 的哈希会怎样？</p>
+      <div class="micro-actions">
+        <button data-pick="a">保持不变，信息只是元数据</button>
+        <button data-pick="b">改变，因为信息也是被哈希的字节</button>
+        <button data-pick="c">只有推送后才会改变</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="信息在对象正文里，改它就会改哈希。" data-msg-b="对。提交对象的正文包含提交信息，任何一个字节变化都会产生新哈希；分支随后被移到新对象上。"></div>
+    </div>
+
+    <div class="screen">
+      <h4>commit 对象的解剖</h4>
+      <p>这四行头加一个空行加正文，就是 commit 的全部。父提交可以没有（根提交），也可以不止一个（合并提交）。</p>
+      <figure class="diagram">
+        <div class="diagram-note">对象内部</div>
+        <div class="mermaid">
+flowchart TB
+  C["commit 对象"] --> T["tree：这次快照的根目录"]
+  C --> P["parent：0 个、1 个或多个"]
+  C --> A["author / committer：人名、邮箱、时间戳、时区"]
+  C --> M["正文：提交信息"]
+  T --> E1["hello.txt → blob 哈希"]
+  T --> E2["src/ → 子 tree"]
+        </div>
+        <figcaption>commit 只指向一棵 tree；文件内容通过 tree 里的 blob 哈希再走一步。目录嵌套就是 tree 套 tree。</figcaption>
+        <details><summary>图源</summary><pre>flowchart TB
+  C[commit] --> T[tree]
+  C --> P[parent]
+  C --> A[author/committer]
+  C --> M[message]
+  T --> E1[hello.txt → blob]
+  T --> E2[src/ → subtree]</pre></details>
+      </figure>
+      <p>所以“提交”不是把文件打包上传，而是<strong>给一棵已经存在的目录树签个名</strong>。树和文件对象可能早就写好了；提交只是把树、父提交、作者和时间绑在一起。</p>
+    </div>
+
+    <div class="callout">
+      <span class="label">术语</span>
+      <p><abbr class="term" tabindex="0" data-def="Git 中有四类对象：blob（文件内容）、tree（目录）、commit（提交）、tag（附注标签）。它们都以内容哈希命名。">对象</abbr>是不可变的内容；<abbr class="term" tabindex="0" data-def="一个文件，里面写着某个对象的哈希，例如 .git/refs/heads/main。移动引用就是改写这个文件。">引用</abbr>是可变的指针；<abbr class="term" tabindex="0" data-def=".git/index，也叫暂存区。它记录下一次提交要包含哪些路径、对应哪个 blob，以及文件的 stat 信息。">索引</abbr>是两者之间的待提交快照。</p>
+    </div>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span>一个普通（非根、非合并）commit 对象里，哪一项<strong>不会</strong>出现？</legend>
+          <label class="opt" data-correct="1"><input type="radio" name="s1-1-q1" value="a"><span><span class="opt-key">A</span> 文件内容本身<span class="opt-why">对。文件内容在 blob 对象里；commit 只通过 tree 间接指向它。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-1-q1" value="b"><span><span class="opt-key">B</span> 根 tree 的哈希<span class="opt-why">这是 commit 的第一行，必须有。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-1-q1" value="c"><span><span class="opt-key">C</span> 父提交的哈希<span class="opt-why">普通提交会记录一个 parent；合并提交会记录多个。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-1-q1" value="d"><span><span class="opt-key">D</span> 作者与提交时间<span class="opt-why">author 和 committer 两行都在对象正文的头部。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>记住层次：commit → tree → blob。内容永远在 blob，commit 只是“这次快照 + 来历”的索引卡。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>“Git 的提交不可变”最准确的意思是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-1-q2" value="a"><span><span class="opt-key">A</span> 提交一旦创建，就不能被任何命令删除<span class="opt-why">gc 可以删除无人引用的对象；不可变不等于永久保留。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s1-1-q2" value="b"><span><span class="opt-key">B</span> 改提交会生成新对象和新哈希，旧对象原样留在库里<span class="opt-why">对。amend、rebase 都是“造新对象 + 移动引用”，不是原地修改。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-1-q2" value="c"><span><span class="opt-key">C</span> 提交只能由当前分支的 HEAD 修改<span class="opt-why">分支引用可以指向任何提交；限制不在对象层。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>哈希由内容算出；内容变了，名字必然变。引用只是指向名字的一张便签。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>你在一个子目录里运行 <code>git status</code>，它却知道整个仓库的状态。最直接的原因是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-1-q3" value="a"><span><span class="opt-key">A</span> <code>git status</code> 会递归扫描父目录<span class="opt-why">它靠发现 .git 目录定位仓库，不是逐级扫描父目录。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s1-1-q3" value="b"><span><span class="opt-key">B</span> 启动时先找到仓库根，再在根上工作<span class="opt-why">对。带 RUN_SETUP 的命令会先定位 .git 并 chdir 到工作树根，命令实现拿到的 prefix 用于还原用户所在子目录。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-1-q3" value="c"><span><span class="opt-key">C</span> 索引文件记录了所有子目录的绝对路径<span class="opt-why">索引里存的是相对仓库根的路径。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>这正是下一节 <code>run_builtin</code> 里 <code>RUN_SETUP</code> 分支做的事。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈3 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s1-1">
+          <label class="sa-label" for="sa-s1-1">用 3–4 句话解释：为什么说“提交不可变，而分支可以来回移动”？分别指出对象和引用承担的角色，并举一个 <code>amend</code> 的例子。</label>
+          <textarea id="sa-s1-1" rows="4" placeholder="先写机制，再写后果……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>对象按内容哈希命名，所以任何改动都会产生一个新对象，旧对象不会被覆盖；分支只是一个写着哈希的文件，移动分支就是改写这个指针。执行 <code>amend</code> 时，Git 用新的 tree、parent 和提交信息写出一个新的 commit 对象，然后把当前分支引用从旧哈希改到新哈希。旧提交仍然存在，只是不再被这个分支引用，最终可能被 gc 回收。因此“不可变”约束的是对象层，“可移动”描述的是引用层。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我点明了“哈希由内容决定”这一机制。</label>
+            <label><input type="checkbox"> 我说清了“引用只是一个指向哈希的文件”。</label>
+            <label><input type="checkbox"> 我用 amend 或 rebase 举出了“新对象 + 移引用”的具体后果。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>commit 是文本对象：tree、parent、author/committer、信息。</li>
+        <li>文件内容在 blob，目录结构在 tree，commit 只是给快照签名。</li>
+        <li>对象不可变，分支/HEAD 可变；历史操作大多是“造新对象 + 移引用”。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="s1-2" data-title="1.2 命令是怎么被接住的" data-read="6" data-check="4" data-next="下一节：add 的两个动作">
+    <span class="section-label">模块 1 · 小节 2</span>
+    <h3>命令是怎么被接住的？</h3><span class="timechip">阅读 ≈6 分钟 · 检查 ≈4 分钟</span>
+
+    <div class="screen">
+      <p>你已经知道提交留下了什么。现在反过来问：<code>git commit</code> 这行字，是怎么变成一个 C 函数的？答案在 <code>git.c</code> 的一张表里。</p>
+      <figure class="diagram">
+        <div class="diagram-note">从命令行到函数</div>
+        <div class="mermaid">
+sequenceDiagram
+  participant U as 用户
+  participant G as git 主程序
+  participant T as commands 表
+  participant R as run_builtin
+  participant S as setup_git_directory
+  participant C as cmd_commit
+  U->>G: git commit -m "..."
+  G->>G: handle_builtin 取 argv[0]
+  G->>T: get_builtin("commit")
+  T-->>G: { cmd_commit, RUN_SETUP | NEED_WORK_TREE }
+  G->>R: run_builtin(p, argc, argv)
+  R->>S: 定位 .git 并切到工作树根
+  S-->>R: prefix
+  R->>C: p->fn(argc, argv, prefix, repo)
+  C-->>U: 退出码
+        </div>
+        <figcaption>命令名先查表，再做仓库定位，最后才调用实现。实验 2 要加的 builtin 就走这条链。</figcaption>
+        <details><summary>图源</summary><pre>sequenceDiagram
+  U->>G: git commit
+  G->>T: get_builtin("commit")
+  G->>R: run_builtin(...)
+  R->>S: setup_git_directory
+  R->>C: p->fn(...)</pre></details>
+      </figure>
+    </div>
+
+    <div class="screen">
+      <h4>表长这样</h4>
+      <div class="code">
+        <div class="code-head"><span>git.c:533</span><button class="copy" data-copy-target="#code-cmds" data-copy="target">复制</button></div>
+        <pre id="code-cmds"><code>static struct cmd_struct commands[] = {
+	{ "add", cmd_add, RUN_SETUP | NEED_WORK_TREE },
+	{ "am", cmd_am, RUN_SETUP | NEED_WORK_TREE },
+	...
+	{ "commit", cmd_commit, RUN_SETUP | NEED_WORK_TREE },
+	...
+};</code></pre>
+      </div>
+      <p>三个字段：命令名、函数指针、启动选项。选项决定“调用实现之前，主程序要替它做多少准备工作”。</p>
+      <div class="translate">
+        <div class="t-code">RUN_SETUP | NEED_WORK_TREE</div>
+        <div class="t-en"><p><b>RUN_SETUP：</b>必须找到仓库；找到后切换到工作树根，并把用户原来的子目录记录成 prefix。</p><p><b>NEED_WORK_TREE：</b>这个命令需要工作区，不能只在裸仓库里跑。</p></div>
+      </div>
+      <p>也有一些命令不需要仓库，例如 <code>git version</code>；另一些“有仓库就更好”，例如 <code>git config</code>，它们用 <code>RUN_SETUP_GENTLY</code>。这个区别不是装饰，它决定了命令能不能在仓库外运行。</p>
+    </div>
+
+    <figure class="diagram">
+      <div class="diagram-note">启动选项的分支</div>
+      <div class="mermaid">
+flowchart TB
+  A["run_builtin"] --> B{"有 RUN_SETUP？"}
+  B -->|"是"| C["setup_git_directory<br/>找不到就退出"]
+  B -->|"否"| D{"有 RUN_SETUP_GENTLY？"}
+  D -->|"是"| E["setup_git_directory_gently<br/>允许 no_repo"]
+  D -->|"否"| F["prefix = NULL<br/>不碰仓库"]
+  C --> G["p->fn(argc, argv, prefix, repo)"]
+  E --> G
+  F --> G
+      </div>
+      <figcaption>同一个 <code>run_builtin</code>，三种启动方式。你加的 builtin 选哪一种，取决于它是否必须依赖仓库。</figcaption>
+      <details><summary>图源</summary><pre>flowchart TB
+  A --> B{有 RUN_SETUP?}
+  B -->|是| C[setup_git_directory]
+  B -->|否| D{有 GENTLY?}
+  D -->|是| E[setup_git_directory_gently]
+  D -->|否| F[prefix = NULL]
+  C --> G[p->fn]
+  E --> G
+  F --> G</pre></details>
+    </figure>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">定位</span>如果 <code>cmd_foo</code> 要读取 <code>.git/index</code>，它至少应该带哪个启动选项？</p>
+      <div class="micro-actions">
+        <button data-pick="a">什么都不用，函数自己找</button>
+        <button data-pick="b">RUN_SETUP</button>
+        <button data-pick="c">NEED_WORK_TREE</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="那样它可能在仓库外被调用，the_repository 还没有初始化。" data-msg-b="对。RUN_SETUP 保证仓库已定位、the_repository 可用；是否需要工作树再另加 NEED_WORK_TREE。"></div>
+    </div>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span><code>commands[]</code> 表里的一项，<strong>不</strong>包含下面哪个信息？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-2-q1" value="a"><span><span class="opt-key">A</span> 命令名<span class="opt-why">第一列就是命令名，查表靠它。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s1-2-q1" value="b"><span><span class="opt-key">B</span> 这个命令的参数个数上限<span class="opt-why">对。参数解析在 cmd_* 内部用 parse_options 完成，表里不记录上限。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-2-q1" value="c"><span><span class="opt-key">C</span> 实现函数的指针<span class="opt-why">第二列就是 cmd_* 的函数指针。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-2-q1" value="d"><span><span class="opt-key">D</span> 启动选项<span class="opt-why">第三列是 RUN_SETUP 等标志的按位或。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>表只负责“叫什么、调谁、启动前做什么”；具体参数由实现函数自己解析。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>关于 <code>RUN_SETUP</code>，哪句话是错的？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-2-q2" value="a"><span><span class="opt-key">A</span> 它会定位仓库根<span class="opt-why">这是它的核心职责。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-2-q2" value="b"><span><span class="opt-key">B</span> 它会把当前目录切到工作树根<span class="opt-why">在有工作树时会 chdir 到根，prefix 保存原来的子目录。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s1-2-q2" value="c"><span><span class="opt-key">C</span> 它保证当前目录一定是一个工作树<span class="opt-why">错。裸仓库也能通过 RUN_SETUP；要工作树得再加 NEED_WORK_TREE。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>“找到 .git” 与 “有工作树” 是两件事，对应两个独立标志。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>你要加一个只打印版本号、完全不需要仓库的 <code>git hello</code>，表项最合适写成：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-2-q3" value="a"><span><span class="opt-key">A</span> <code>{ "hello", cmd_hello, RUN_SETUP | NEED_WORK_TREE }</code><span class="opt-why">这会让它在仓库外直接失败，完全没必要。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s1-2-q3" value="b"><span><span class="opt-key">B</span> <code>{ "hello", cmd_hello, NEED_WORK_TREE }</code><span class="opt-why">只有 NEED_WORK_TREE 并不负责定位仓库；单用它是错误搭配。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s1-2-q3" value="c"><span><span class="opt-key">C</span> <code>{ "hello", cmd_hello, 0 }</code><span class="opt-why">对。不带启动标志，prefix 为 NULL，也不会要求仓库，最直接。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>实验 2 的 <code>object-meta</code> 需要读对象库，所以它用 <code>RUN_SETUP</code>，而不是 0。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈2 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s1-2">
+          <label class="sa-label" for="sa-s1-2">用 2–3 句话说明：为什么 <code>run_builtin</code> 要在调用 <code>p-&gt;fn</code> 之前做仓库定位？如果把这个顺序反过来，哪些行为会坏掉？</label>
+          <textarea id="sa-s1-2" rows="4" placeholder="从 the_repository 和 prefix 的角度想……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>命令实现读的是全局的 <code>the_repository</code> 和索引，而这些对象需要先由 <code>setup_git_directory</code> 根据当前目录定位并初始化；同时它会把用户所在的子目录记成 prefix，供命令把相对路径还原到仓库根。若先调用实现，<code>the_repository</code> 可能没有对象库，索引路径也不对，<code>git add ../x</code> 这类相对路径会解析到错误位置。顺序反过来还会让“仓库外运行”与“仓库内运行”的错误处理无法统一。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我提到了 <code>the_repository</code> / 索引的初始化。</label>
+            <label><input type="checkbox"> 我提到了 prefix 或相对路径。</label>
+            <label><input type="checkbox"> 我说出了顺序反过来会导致的具体后果。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li><code>commands[]</code> 把命令名映射到 <code>cmd_*</code> 函数与启动标志。</li>
+        <li><code>RUN_SETUP</code> 负责定位仓库并切到工作树根；<code>NEED_WORK_TREE</code> 才要求有工作区。</li>
+        <li>加一个 builtin 的四步：实现、声明、登记、加入构建。实验 2 就做这件事。</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="lab" data-lab="lab-gitdir" id="lab-gitdir">
+    <div class="lab-head">
+      <div class="lab-kicker">实验 0 · 12 分钟 · 难度：入门</div>
+      <h3>不用 <code>git init</code>，手工搭一个仓库</h3>
+      <p class="lab-sub">如果 Git 只是一个对象库加引用，那么一个仓库的最小目录是什么？亲手搭出来，再让 Git 认它。</p>
+    </div>
+    <div class="lab-body">
+      <p class="lab-broken"><span class="label">当前状态</span>空目录；<code>make-repo.sh</code> 直接退出 1，运行 <code>git status</code> 会说 <em>not a git repository</em>。</p>
+
+      <div class="lab-grid">
+        <div>
+          <h4>任务</h4>
+          <ol class="task-list">
+            <li>创建 <code>.git/objects</code> 与 <code>.git/refs/heads</code>。</li>
+            <li>写 <code>.git/HEAD</code>，内容为 <code>ref: refs/heads/main</code>。</li>
+            <li>写最小 <code>.git/config</code>：<code>repositoryformatversion = 0</code>、<code>filemode = true</code>、<code>bare = false</code>。</li>
+            <li>让 <code>git status</code> 成功返回，且 <code>git symbolic-ref HEAD</code> 输出 <code>refs/heads/main</code>。</li>
+          </ol>
+          <h4>交付物</h4>
+          <div class="pathline"><code>course/work/lab-gitdir/make-repo.sh</code><button class="copy" data-copy="course/work/lab-gitdir/make-repo.sh">复制路径</button></div>
+          <h4>约束</h4>
+          <ul>
+            <li>不能调用 <code>git init</code> 或 <code>git init-db</code>；检查器会用 shim 拦截。</li>
+            <li>脚本在空目录里运行，只能创建文件和目录。</li>
+            <li>不需要 index、不需要提交；空仓库即可。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>只读预览</h4>
+          <div class="lab-preview"><pre>#!/bin/sh
+set -eu
+
+# TODO 1: 目录
+# TODO 2: HEAD
+# TODO 3: config
+
+echo "not implemented" &gt;&amp;2
+exit 1</pre></div>
+          <div class="lab-actions">
+            <button type="button" class="btn" data-check>检查我的实验</button>
+            <span class="lab-status">在临时空目录里验证</span>
+          </div>
+          <div class="lab-results" hidden></div>
+        </div>
+      </div>
+
+      <details class="hints">
+        <summary>三级提示</summary>
+        <div class="hint"><b>提示 1 · 目录</b><code>mkdir -p .git/objects .git/refs/heads</code>。Git 不会要求 <code>objects/info</code> 或 <code>refs/tags</code>。</div>
+        <div class="hint"><b>提示 2 · HEAD</b><code>printf 'ref: refs/heads/main\n' &gt; .git/HEAD</code>。末尾必须有换行。</div>
+        <div class="hint"><b>提示 3 · config</b>用 heredoc 写 <code>[core]</code> 三行；<code>repositoryformatversion</code> 是 Git 判断“这是不是仓库”的关键。</div>
+      </details>
+
+      <p class="lab-foot">终端检查：<code>node course/check.mjs lab-gitdir</code>；恢复骨架：<code>node course/lab.mjs restore lab-gitdir</code>。</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<section class="module" id="m2" data-num="2" data-title="跟着一次 add / commit 走">
+<div class="wrap">
+  <header class="module-head">
+    <div class="module-num">02</div>
+    <h2>跟着一次 add / commit 走</h2>
+    <p class="lede">把上一节的四个落点拉成一条时间线：文件字节怎么变成 blob，索引记了什么，tree 什么时候写，最后是谁动了引用。实验 1 会把这条线亲手走一遍。</p>
+    <figure class="video-block">
+      <video controls preload="metadata" poster="assets/git-m2-poster.jpg" aria-label="模块 2 短片：add 与 commit 的主线">
+        <source src="assets/git-m2.mp4" type="video/mp4">
+        你的浏览器不支持视频标签。
+      </video>
+      <figcaption><span>模块短片 · 29 秒</span><span>add → tree → commit → ref</span></figcaption>
+    </figure>
+  </header>
+
+  <section class="section" id="s2-1" data-title="2.1 add 的两个动作" data-read="6" data-check="4" data-next="下一节：commit 的收尾">
+    <span class="section-label">模块 2 · 小节 1</span>
+    <h3><code>git add</code> 的两个动作</h3><span class="timechip">阅读 ≈6 分钟 · 检查 ≈4 分钟</span>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">回忆</span>不往回翻：普通 commit 对象里，文件内容本身存在哪里？</p>
+      <div class="micro-actions">
+        <button data-pick="a">commit 正文里</button>
+        <button data-pick="b">blob 对象里，commit 通过 tree 间接指向它</button>
+        <button data-pick="c">索引里，commit 只存路径</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="commit 只有 tree、parent、作者和信息。" data-msg-b="对。commit → tree → blob 是三层；这也决定了 add 只需要写 blob 和索引。"></div>
+    </div>
+
+    <div class="screen">
+      <p>上一节说对象不可变、索引是待提交快照。<code>git add</code> 正好同时碰这两层，但它<strong>不写 tree，也不写 commit</strong>。</p>
+      <figure class="diagram">
+        <div class="diagram-note">add 做的两件事</div>
+        <div class="mermaid">
+flowchart LR
+  W["hello.txt<br/>工作区字节"] -->|"读文件 + 算哈希"| B["blob 对象<br/>.git/objects/8d/0e41..."]
+  W -->|"stat：mtime / size / ino"| E["索引项<br/>path + blob 哈希 + stat"]
+  B --> E
+  E --> I[".git/index"]
+  style B fill:#FDF0EC,stroke:#B83A1F
+  style I fill:#F7F7F8,stroke:#5F6673
+        </div>
+        <figcaption>一个动作写对象库（只增不改），另一个动作改索引（可反复覆盖）。tree 还不存在。</figcaption>
+        <details><summary>图源</summary><pre>flowchart LR
+  W -->|读文件+算哈希| B[blob 对象]
+  W -->|stat| E[索引项]
+  B --> E
+  E --> I[.git/index]</pre></details>
+      </figure>
+    </div>
+
+    <div class="screen">
+      <h4>代码里的顺序</h4>
+      <p><code>builtin/add.c</code> 最终走到 <code>read-cache.c</code> 的 <code>add_to_index</code>。下面这段省略了路径规范化与 ignorecase 分支，只留下主干：</p>
+      <div class="code">
+        <div class="code-head"><span>read-cache.c:721 · add_to_index</span></div>
+        <pre><code>int add_to_index(struct index_state *istate, const char *path,
+		 struct stat *st, int flags)
+{
+	...
+	unsigned hash_flags = pretend ? 0 : INDEX_WRITE_OBJECT;
+	...
+	ce = make_empty_cache_entry(istate, namelen);
+	memcpy(ce-&gt;name, path, namelen);
+	ce-&gt;ce_namelen = namelen;
+	if (!intent_only)
+		fill_stat_cache_info(istate, ce, st);
+	...
+	if (!intent_only) {
+		if (index_path(istate, &amp;ce-&gt;oid, path, st, hash_flags)) {
+			discard_cache_entry(ce);
+			return error(_("unable to index file '%s'"), path);
+		}
+	} else
+		set_object_name_for_intent_to_add_entry(ce);
+	...</code></pre>
+      </div>
+      <div class="translate">
+        <div class="t-code">unsigned hash_flags = pretend ? 0 : INDEX_WRITE_OBJECT;</div>
+        <div class="t-en"><p><b>pretend：</b><code>git add -n</code> 只报告不落盘，所以不写对象。</p><p><b>INDEX_WRITE_OBJECT：</b>正常 add 时，<code>index_path</code> 会把 blob 真正写进对象库。</p></div>
+      </div>
+      <div class="translate">
+        <div class="t-code">fill_stat_cache_info(istate, ce, st);</div>
+        <div class="t-en"><p><b>stat 缓存：</b>把文件的 mtime、size、ino、uid 等记进索引项。下一次 <code>status</code> 先比这些数字，不急着读文件内容。</p></div>
+      </div>
+      <p>所以索引项不是“文件名 → 内容”，而是“路径 → blob 哈希 + 一组 stat 证据 + 模式位”。这组证据是 <code>status</code> 能变快的关键，模块 4 会展开。</p>
+    </div>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">预测</span>刚 <code>git add hello.txt</code>，还没 commit。此时 <code>git write-tree</code> 会失败吗？</p>
+      <div class="micro-actions">
+        <button data-pick="a">会，tree 只能由 commit 创建</button>
+        <button data-pick="b">不会，索引已经足够写出一棵树</button>
+        <button data-pick="c">会，必须先进暂存区队列</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="tree 不依赖 commit；它只依赖索引里的路径、模式和 blob 哈希。" data-msg-b="对。索引就是树的原材料，git write-tree 随时可以把当前索引写成 tree。"></div>
+    </div>
+
+    <div class="screen">
+      <h4>为什么索引是排好序的数组</h4>
+      <p>内存里的索引是 <code>struct cache_entry **cache</code>：一个按路径字节序排序的指针数组。插入新项时用 <code>memmove</code> 挪出空位，查找时二分。</p>
+      <div class="code">
+        <div class="code-head"><span>read-cache.c:1312 · add_index_entry</span></div>
+        <pre><code>int add_index_entry(struct index_state *istate, struct cache_entry *ce, int option)
+{
+	int pos;
+	...
+	ALLOC_GROW(istate-&gt;cache, istate-&gt;cache_nr + 1,
+		   istate-&gt;cache_alloc);
+	istate-&gt;cache_nr++;
+	if (istate-&gt;cache_nr &gt; pos + 1)
+		MOVE_ARRAY(istate-&gt;cache + pos + 1,
+			   istate-&gt;cache + pos,
+			   istate-&gt;cache_nr - pos - 1);
+	set_index_entry(istate, pos, ce);
+	istate-&gt;cache_changed |= CE_ENTRY_ADDED;
+	return 0;
+}</code></pre>
+      </div>
+      <p>有序带来三件事：按路径二分查找、线性合并两棵树、<code>status</code> 可以顺序扫描工作区。代价是插入要挪数组——这也是超大仓库需要 split index 的原因之一。</p>
+    </div>
+
+    <div class="micro order" data-order="读文件并计算 blob 哈希|把 blob 写进对象库|在索引中插入 cache_entry|更新 .git/index">
+      <p class="micro-q"><span class="tag">排序</span>把 <code>git add</code> 的内部步骤按发生顺序点出来。</p>
+      <div class="order-seq" data-seq></div>
+      <div class="order-pool">
+        <button data-step="在索引中插入 cache_entry">在索引中插入 cache_entry</button>
+        <button data-step="读文件并计算 blob 哈希">读文件并计算 blob 哈希</button>
+        <button data-step="更新 .git/index">更新 .git/index</button>
+        <button data-step="把 blob 写进对象库">把 blob 写进对象库</button>
+      </div>
+      <p class="order-status" aria-live="polite"></p>
+      <button type="button" class="textbtn" data-order-reset>重来</button>
+    </div>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span><code>git add</code> 之后，对象库里一定新增了什么？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-1-q1" value="a"><span><span class="opt-key">A</span> 一个 tree 对象<span class="opt-why">tree 要等 write-tree / commit 时才写。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s2-1-q1" value="b"><span><span class="opt-key">B</span> 一个 blob 对象（内容未变时也可能复用已有的）<span class="opt-why">对。add 会把文件内容写成 blob；内容没变时哈希相同，对象已存在就直接复用。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-1-q1" value="c"><span><span class="opt-key">C</span> 一个 commit 对象<span class="opt-why">commit 由 git commit 创建。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-1-q1" value="d"><span><span class="opt-key">D</span> 一条 reflog<span class="opt-why">reflog 记录引用移动，add 不动引用。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>add 只碰对象库（blob）与索引；tree、commit、ref 都留给下一步。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>索引项里保存的 stat 信息，主要用途是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-1-q2" value="a"><span><span class="opt-key">A</span> 恢复文件权限<span class="opt-why">权限只用一个模式位表示，不需要整套 stat。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s2-1-q2" value="b"><span><span class="opt-key">B</span> 让 status 先比元数据，避免每次都读文件内容<span class="opt-why">对。mtime/size/ino 没变就假定内容没变；变了的才重新哈希。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-1-q2" value="c"><span><span class="opt-key">C</span> 记录文件的完整历史<span class="opt-why">历史在 commit 图里，不在索引。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>这是一层缓存：元数据是线索，不是结论；mtime 相同但内容可疑时仍会重算（racy clean）。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>把索引设计成按路径排序的数组，<strong>不</strong>会带来下面哪个好处？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-1-q3" value="a"><span><span class="opt-key">A</span> 按路径二分查找<span class="opt-why">有序数组支持二分。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-1-q3" value="b"><span><span class="opt-key">B</span> 顺序扫描时能同时推进工作区与索引<span class="opt-why">两边都按同一顺序排列，合并扫描很自然。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s2-1-q3" value="c"><span><span class="opt-key">C</span> 插入新路径是 O(1)<span class="opt-why">对，这不是好处。插入要 memmove 挪动数组，最坏 O(n)，这也是 split index 的动机之一。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>有序的收益在查找和合并，成本在插入。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈2 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s2-1">
+          <label class="sa-label" for="sa-s2-1">用 3 句话解释：为什么 <code>git add</code> 既写对象库又改索引，而不是只做其中一件？各写一条“如果省略它会坏掉”的后果。</label>
+          <textarea id="sa-s2-1" rows="4" placeholder="从下次提交需要什么开始想……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>对象库保存不可变的内容，下一次提交必须能通过哈希取到文件字节，所以 add 要先把内容写成 blob。索引保存“这次提交包含哪些路径、每个路径指向哪个 blob、文件当时是什么状态”，提交时才能在不重新扫描工作区的情况下写出 tree。若省略写对象，索引里会指向不存在的 blob；若省略改索引，blob 虽然存在，但没有任何东西告诉 commit 应该把它放进哪棵树。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我说出了对象库“按哈希取内容”的作用。</label>
+            <label><input type="checkbox"> 我说出了索引“路径 + 哈希 + stat”的作用。</label>
+            <label><input type="checkbox"> 我给出了两边各自省略后的具体后果。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>add = 写 blob + 插入/更新索引项，不写 tree/commit。</li>
+        <li>索引项含 blob 哈希、模式位和 stat 缓存；stat 是 status 的快路径。</li>
+        <li>索引按路径排序，查找快、插入要挪数组。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="s2-2" data-title="2.2 commit 的收尾" data-read="6" data-check="4" data-next="下一节：实验 1">
+    <span class="section-label">模块 2 · 小节 2</span>
+    <h3><code>git commit</code> 的收尾</h3><span class="timechip">阅读 ≈6 分钟 · 检查 ≈4 分钟</span>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">回忆</span>commit 写出的根 tree，来自哪里？</p>
+      <div class="micro-actions">
+        <button data-pick="a">重新扫描整个工作区</button>
+        <button data-pick="b">索引里的 cache-tree</button>
+        <button data-pick="c">HEAD 指向的旧 tree</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="提交不重扫工作区；索引已经记录了快照。" data-msg-b="对。cache-tree 复用未变化目录的 OID，只重算失效的目录。"></div>
+    </div>
+
+    <div class="screen">
+      <p>提交时，Git 先确保索引是最新的，再把索引变成 tree，最后写 commit 并移动引用。三个动作对应三个函数，顺序不能换。</p>
+      <figure class="diagram">
+        <div class="diagram-note">commit 的五步</div>
+        <div class="mermaid">
+sequenceDiagram
+  participant C as cmd_commit
+  participant I as index
+  participant T as cache-tree
+  participant O as object store
+  participant R as refs
+  C->>I: prepare_index：加/删文件、refresh
+  I->>T: cache_tree_update
+  T->>O: 写出变化的 tree 对象
+  C->>O: commit_tree_extended 写 commit
+  C->>R: update_head_with_reflog
+  R-->>R: 写 .lock → rename → 追加 reflog
+        </div>
+        <figcaption>注意 cache-tree：提交并不重新扫描工作区，它复用索引里已知的子树。</figcaption>
+        <details><summary>图源</summary><pre>sequenceDiagram
+  C->>I: prepare_index
+  I->>T: cache_tree_update
+  T->>O: write trees
+  C->>O: commit_tree_extended
+  C->>R: update_head_with_reflog</pre></details>
+      </figure>
+    </div>
+
+    <div class="screen">
+      <h4>prepare_index 与 cache-tree</h4>
+      <p><code>prepare_index</code> 在 <code>builtin/commit.c:351</code>，核心几行是：</p>
+      <div class="code">
+        <div class="code-head"><span>builtin/commit.c:532</span></div>
+        <pre><code>	repo_hold_locked_index(the_repository, &amp;index_lock,
+			       LOCK_DIE_ON_ERROR);
+	add_remove_files(&amp;partial);
+	refresh_index(the_repository-&gt;index, REFRESH_QUIET,
+		      NULL, NULL, NULL);
+	cache_tree_update(the_repository-&gt;index, WRITE_TREE_SILENT);
+	if (write_locked_index(the_repository-&gt;index, &amp;index_lock, 0))
+		die(_("unable to write new index file"));</code></pre>
+      </div>
+      <p><code>cache_tree_update</code> 不是“写一棵全新的树”。索引里带着一棵 <abbr class="term" tabindex="0" data-def="cache_tree 是索引的树形摘要：每个目录缓存自己的 tree OID 和子树。目录内容没变时，直接复用缓存的 OID。">cache-tree</abbr>，只有被标记失效的目录才重算。所以提交一个 10 万文件的仓库，通常只为改动路径上的少数目录写 tree。</p>
+      <div class="callout">
+        <span class="label">关键边界</span>
+        <p>对象库只增不改。同一份内容重复提交，tree 与 blob 的哈希相同，不会再写一遍；只有 commit 因为时间/信息/父提交不同而是新对象。</p>
+      </div>
+    </div>
+
+    <div class="micro" data-micro data-good="a">
+      <p class="micro-q"><span class="tag">预测</span>只改提交信息、文件内容不变，新 commit 的根 tree 哈希会怎样？</p>
+      <div class="micro-actions">
+        <button data-pick="a">完全不变，直接复用</button>
+        <button data-pick="b">跟着 commit 一起变</button>
+        <button data-pick="c">变成空 tree</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="对。tree 只描述目录内容；内容没变，cache-tree 直接给出同一个 OID。" data-msg-b="tree 的哈希只由目录内容决定，与提交信息无关。"></div>
+    </div>
+
+    <div class="screen">
+      <h4>写 commit，再移动引用</h4>
+      <p><code>commit_tree_extended</code> 把 tree、parents、author/committer 和信息拼成文本，再交给对象库写入。之后 <code>update_head_with_reflog</code> 发起一次引用事务。</p>
+      <div class="code">
+        <div class="code-head"><span>builtin/commit.c:1938</span></div>
+        <pre><code>	if (commit_tree_extended(sb.buf, sb.len,
+				 &amp;the_repository-&gt;index-&gt;cache_tree-&gt;oid,
+				 parents, &amp;oid, author_ident.buf, NULL,
+				 sign_commit, extra)) {
+		rollback_index_files();
+		die(_("failed to write commit object"));
+	}
+
+	if (update_head_with_reflog(current_head, &amp;oid, reflog_msg, &amp;sb,
+				    &amp;err)) {
+		rollback_index_files();
+		die("%s", err.buf);
+	}</code></pre>
+      </div>
+      <div class="translate">
+        <div class="t-code">the_repository-&gt;index-&gt;cache_tree-&gt;oid</div>
+        <div class="t-en"><p><b>根 tree：</b>提交用的不是“重新算一遍的树”，而是索引 cache-tree 顶端的 OID。</p></div>
+      </div>
+      <div class="translate">
+        <div class="t-code">update_head_with_reflog(current_head, &amp;oid, ...)</div>
+        <div class="t-en"><p><b>移动 HEAD：</b>把 HEAD 从旧提交更新到新提交，同时把这次移动写进 reflog。HEAD 是符号引用，真正被改写的是它指向的分支。</p></div>
+      </div>
+      <p>所以“提交成功”的原子性边界在引用更新：commit 对象可能已经写进对象库，但引用事务失败时，你会看到一个没有分支指向的提交——它会在 reflog 或 <code>fsck</code> 里出现。实验 3 会利用这一点。</p>
+    </div>
+
+    <figure class="diagram">
+      <div class="diagram-note">对象与引用的先后</div>
+      <div class="mermaid">
+flowchart LR
+  A["索引<br/>已 refresh"] -->|"cache_tree_update"| B["tree 对象<br/>只写变化的目录"]
+  B -->|"commit_tree_extended"| C["commit 对象<br/>tree + parent + 信息"]
+  C -->|"update_head_with_reflog"| D["refs/heads/main<br/>旧哈希 → 新哈希"]
+  D --> E["reflog<br/>main@{0}"]
+  C -.->|"引用失败时"| F["孤立对象<br/>仍可被 fsck 找到"]
+  style F fill:#FDF0EC,stroke:#B83A1F
+      </div>
+      <figcaption>写对象与移引用不是同一个事务；理解这个缝隙，才能理解“提交丢了但对象还在”。</figcaption>
+      <details><summary>图源</summary><pre>flowchart LR
+  A[索引] -->|cache_tree_update| B[tree]
+  B -->|commit_tree_extended| C[commit]
+  C -->|update_head_with_reflog| D[refs/heads/main]
+  D --> E[reflog]
+  C -.-> F[孤立对象]</pre></details>
+    </figure>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span><code>cache_tree_update</code> 的主要收益是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-2-q1" value="a"><span><span class="opt-key">A</span> 压缩 blob<span class="opt-why">压缩发生在对象写入时，与 cache-tree 无关。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s2-2-q1" value="b"><span><span class="opt-key">B</span> 复用未变化目录的 tree OID，避免重扫整棵树<span class="opt-why">对。只有失效的目录需要重算，大仓库提交因此不需要 O(文件数) 的树重建。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-2-q1" value="c"><span><span class="opt-key">C</span> 保证提交一定成功<span class="opt-why">引用更新仍可能失败。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>缓存的是“目录 → tree OID”的映射；内容不变就没有重算的必要。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>如果 commit 对象写成功、但引用事务失败，最可能的状态是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-2-q2" value="a"><span><span class="opt-key">A</span> 对象库回滚，什么也没留下<span class="opt-why">对象库只增不改，没有回滚已写对象的机制。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s2-2-q2" value="b"><span><span class="opt-key">B</span> 提交对象存在，但没有分支指向它<span class="opt-why">对。这正是“孤立提交”的来源，也是 reflog / fsck 能找回东西的原因。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-2-q2" value="c"><span><span class="opt-key">C</span> 索引被删除<span class="opt-why">失败路径会 rollback_index_files，恢复索引文件。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>写对象与移引用是两个阶段；前者成功不等于后者成功。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>为什么同一份文件内容重复提交，blob 不会重复写？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-2-q3" value="a"><span><span class="opt-key">A</span> 因为 Git 维护了文件名到内容的映射表<span class="opt-why">Git 不按文件名索引内容；名字在 tree 里。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s2-2-q3" value="b"><span><span class="opt-key">B</span> 因为对象名由内容算出，同名对象已存在就直接复用<span class="opt-why">对。写入前先算哈希并检查对象是否存在（odb_write_object_ext 里会 freshen 已存在对象）。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s2-2-q3" value="c"><span><span class="opt-key">C</span> 因为索引会去重文件内容<span class="opt-why">索引按路径去重，不按内容去重。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>内容寻址天然去重：名字就是内容的指纹。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈2 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s2-2">
+          <label class="sa-label" for="sa-s2-2">用 3–4 句话说明一次 commit 的收尾顺序：索引、tree、commit、ref。指出哪一步失败会留下“对象还在、分支没动”的状态，以及为什么。</label>
+          <textarea id="sa-s2-2" rows="4" placeholder="按阶段写，别按命令写……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>提交先把索引 refresh 并锁住，用 cache-tree 把变化的目录写成 tree，再用这些 tree、父提交和提交信息写出 commit 对象，最后通过引用事务把 HEAD（实际是它指向的分支）移到新哈希并追加 reflog。前三步只写对象库，最后一步才改变“当前分支是什么”。如果引用事务失败，commit 对象已经落盘但没有引用指向它，于是成为孤立对象；它仍能被 fsck 找到，也可能还能从 reflog 里看到。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我按“索引 → tree → commit → ref”写清了顺序。</label>
+            <label><input type="checkbox"> 我指出了引用更新是最后一步。</label>
+            <label><input type="checkbox"> 我解释了失败后为什么对象还在、分支没动。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>提交不重扫工作区：索引 + cache-tree 已经给出树。</li>
+        <li>commit 对象由 tree、parents、作者、信息拼成，写入前先算哈希。</li>
+        <li>引用更新是最后一步；对象与引用之间有一个可观测的缝隙。</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="lab" data-lab="lab-plumbing" id="lab-plumbing">
+    <div class="lab-head">
+      <div class="lab-kicker">实验 1 · 18 分钟 · 难度：中</div>
+      <h3>只用 plumbing 造一个 commit</h3>
+      <p class="lab-sub">不运行 <code>git add</code>，不运行 <code>git commit</code>。用底层命令把刚刚学的四步亲手接起来。</p>
+    </div>
+    <div class="lab-body">
+      <p class="lab-broken"><span class="label">当前状态</span><code>build.sh</code> 里只有一个 TODO，运行后直接退出 1；沙盒仓库里什么也不会发生。</p>
+
+      <div class="lab-grid">
+        <div>
+          <h4>任务</h4>
+          <ol class="task-list">
+            <li>用 <code>hash-object -w</code> 把 <code>hello git\n</code> 写成 blob。</li>
+            <li>用 <code>update-index --add --cacheinfo</code> 把 blob 以 100644 模式登记为 <code>hello.txt</code>。</li>
+            <li>用 <code>write-tree</code> 得到根 tree。</li>
+            <li>用 <code>commit-tree</code> 写一个<strong>无父提交</strong>，信息为 <code>lab: one commit</code>。</li>
+            <li>用 <code>update-ref</code> 把 <code>refs/heads/main</code> 指过去，并打印提交哈希。</li>
+          </ol>
+          <h4>交付物</h4>
+          <div class="pathline"><code>course/work/lab-plumbing/build.sh</code><button class="copy" data-copy="course/work/lab-plumbing/build.sh">复制路径</button></div>
+          <h4>约束</h4>
+          <ul>
+            <li>作者与提交者都必须是 <code>Lab &lt;lab@example.com&gt;</code>。</li>
+            <li>两个时间都固定为 <code>2026-01-01T00:00:00 +0000</code>。</li>
+            <li>只能用 plumbing：<code>hash-object</code>、<code>update-index</code>、<code>write-tree</code>、<code>commit-tree</code>、<code>update-ref</code>。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>只读预览</h4>
+          <div class="lab-preview"><pre>#!/bin/sh
+# 在这里完成实验 1。
+set -eu
+
+# TODO 1: 写 blob
+# TODO 2: 登记索引
+# TODO 3: 写 tree
+# TODO 4: 写 commit
+# TODO 5: 移动 refs/heads/main
+
+echo "not implemented" &gt;&amp;2
+exit 1</pre></div>
+          <div class="lab-actions">
+            <button type="button" class="btn" data-check>检查我的实验</button>
+            <span class="lab-status">在真实仓库里运行，页面只读</span>
+          </div>
+          <div class="lab-results" hidden></div>
+        </div>
+      </div>
+
+      <details class="hints">
+        <summary>三级提示（先自己想，卡住再展开）</summary>
+        <div class="hint"><b>提示 1 · 方向</b>先把“内容 → blob”做实：<code>printf 'hello git\n' | git hash-object -w --stdin</code>。把输出存进变量。</div>
+        <div class="hint"><b>提示 2 · 结构</b>索引需要模式和路径：<code>git update-index --add --cacheinfo 100644,$blob,hello.txt</code>；然后 <code>git write-tree</code>。</div>
+        <div class="hint"><b>提示 3 · 最后一步</b><code>git commit-tree</code> 从 stdin 读信息，作者/时间用 <code>GIT_AUTHOR_*</code>、<code>GIT_COMMITTER_*</code> 环境变量固定；最后 <code>git update-ref refs/heads/main $commit</code>。</div>
+      </details>
+
+      <p class="lab-foot">终端检查：<code>node course/check.mjs lab-plumbing</code>；恢复骨架：<code>node course/lab.mjs restore lab-plumbing</code>。参考答案在检查器里，页面不展示。</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<section class="module" id="m3" data-num="3" data-title="对象库">
+<div class="wrap">
+  <header class="module-head">
+    <div class="module-num">03</div>
+    <h2>对象库</h2>
+    <p class="lede">上一节反复出现“写对象”。现在打开写入函数：一个对象在磁盘上到底长什么样，名字怎么算出来，读的时候又怎么在松散对象与 pack 之间找到它。</p>
+  </header>
+
+  <section class="section" id="s3-1" data-title="3.1 内容寻址：名字就是指纹" data-read="7" data-check="5" data-next="下一节：读路径与 pack">
+    <span class="section-label">模块 3 · 小节 1</span>
+    <h3>内容寻址：名字就是指纹</h3><span class="timechip">阅读 ≈7 分钟 · 检查 ≈5 分钟</span>
+
+    <div class="micro" data-micro data-good="c">
+      <p class="micro-q"><span class="tag">回忆</span>上一节 <code>commit</code> 的最后一步动了什么？</p>
+      <div class="micro-actions">
+        <button data-pick="a">写了一个 blob</button>
+        <button data-pick="b">写了一棵 tree</button>
+        <button data-pick="c">移动了引用，并追加 reflog</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="blob 在 add 阶段就写好了。" data-msg-b="tree 在 commit 前半段由 cache-tree 写出。" data-msg-c="对。对象先落盘，引用最后移动；这也是孤立提交能存在的原因。"></div>
+    </div>
+
+    <div class="screen">
+      <p>Git 不存储“文件名 → 内容”的表。它把内容加上一个小头，算哈希，用哈希当文件名。取的时候，用同样的算法验证内容——名字本身就是完整性校验。</p>
+      <figure class="diagram">
+        <div class="diagram-note">从字节到路径</div>
+        <div class="mermaid">
+flowchart LR
+  A["内容字节<br/>hello git\n<br/>10 字节"] --> B["加头<br/>blob 10 + NUL"]
+  B --> C["SHA-1<br/>8d0e4123..."]
+  C --> D["松散对象路径<br/>.git/objects/8d/0e4123..."]
+  D --> E["zlib 压缩后写入"]
+  C -.-> F["对象名<br/>8d0e41234f24b6da002d962a26c2495ea16a425f"]
+        </div>
+        <figcaption>头里的类型与长度也参与哈希，所以 blob 与 tree 即使正文相同也不会撞名。</figcaption>
+        <details><summary>图源</summary><pre>flowchart LR
+  A[内容] --> B[加头 blob 10 NUL]
+  B --> C[SHA-1]
+  C --> D[.git/objects/8d/0e41...]
+  D --> E[zlib 写入]</pre></details>
+      </figure>
+    </div>
+
+    <div class="screen">
+      <h4>两段真实代码</h4>
+      <p>头是 <code>"&lt;type&gt; &lt;size&gt;\0"</code>，由 <code>format_object_header</code> 生成；哈希覆盖“头 + 正文”。</p>
+      <div class="code">
+        <div class="code-head"><span>object-file.c:102 · format_object_header</span></div>
+        <pre><code>int format_object_header(char *str, size_t size, enum object_type type,
+			 size_t objsize)
+{
+	const char *name = type_name(type);
+	...
+	return xsnprintf(str, size, "%s %"PRIuMAX,
+			 name, (uintmax_t)objsize) + 1;
+}</code></pre>
+      </div>
+      <div class="code">
+        <div class="code-head"><span>object-file.c:459 · hash_object_file</span></div>
+        <pre><code>void hash_object_file(const struct git_hash_algo *algo, const void *buf,
+		      size_t len, enum object_type type,
+		      struct object_id *oid)
+{
+	struct git_hash_ctx c;
+	char hdr[MAX_HEADER_LEN];
+	int hdrlen;
+
+	hdrlen = format_object_header(hdr, sizeof(hdr), type, len);
+
+	git_hash_init(&amp;c, algo);
+	git_hash_update(&amp;c, hdr, hdrlen);
+	git_hash_update(&amp;c, buf, len);
+	git_hash_final_oid(oid, &amp;c);
+}</code></pre>
+      </div>
+      <div class="translate">
+        <div class="t-code">+ 1</div>
+        <div class="t-en"><p><b>包含 NUL：</b><code>xsnprintf</code> 返回写入的字符数，加 1 把结尾的 NUL 也算进哈希输入。少算这个字节，所有哈希都会和 Git 对不上。</p></div>
+      </div>
+      <p>写入时，<code>odb_write_object_ext</code> 先算哈希，再检查对象是否已存在；存在就只更新 mtime（freshen），不重写。因此重复 add 同一内容不会让对象库膨胀。</p>
+    </div>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">预测</span>两个不同路径的文件，内容完全相同。它们会有几个 blob 对象？</p>
+      <div class="micro-actions">
+        <button data-pick="a">两个，路径不同</button>
+        <button data-pick="b">一个，blob 不看路径</button>
+        <button data-pick="c">取决于是否在同一目录</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="路径存在 tree 里；blob 只由内容决定，所以会复用同一个对象。" data-msg-b="对。路径是 tree 里的条目名，不进入 blob 的哈希；这是 Git 天然去重的基础。"></div>
+    </div>
+
+    <figure class="diagram">
+      <div class="diagram-note">写入路径</div>
+      <div class="mermaid">
+stateDiagram-v2
+  [*] --> Hash
+  Hash --> Exists: 算出 OID
+  Exists --> Freshen: 对象已存在
+  Exists --> Write: 不存在
+  Freshen --> [*]: 只更新 mtime
+  Write --> Compress: 加头 + zlib
+  Compress --> Rename: 写临时文件
+  Rename --> [*]: 原子改名到 objects/xx/yyyy
+      </div>
+      <figcaption>“先查再写”让写入是幂等的；临时文件 + 改名保证读到的对象不会只写了一半。</figcaption>
+      <details><summary>图源</summary><pre>stateDiagram-v2
+  [*] --> Hash
+  Hash --> Exists
+  Exists --> Freshen: exists
+  Exists --> Write: missing
+  Write --> Compress
+  Compress --> Rename
+  Rename --> [*]</pre></details>
+    </figure>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span>对象哈希的输入是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-1-q1" value="a"><span><span class="opt-key">A</span> 只有文件内容<span class="opt-why">少算了头，哈希会和 Git 不一致。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s3-1-q1" value="b"><span><span class="opt-key">B</span> 类型、长度、NUL 组成的头，再加正文<span class="opt-why">对。头让 blob 与 tree 即使正文相同也不会得到同一个名字。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-1-q1" value="c"><span><span class="opt-key">C</span> 文件路径加内容<span class="opt-why">路径不参与 blob 哈希，否则重命名会产生新对象。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-1-q1" value="d"><span><span class="opt-key">D</span> 提交信息加内容<span class="opt-why">提交信息只在 commit 对象里。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden><code>"blob 10\0" + "hello git\n"</code> 才是完整输入。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>关于松散对象，哪句话是错的？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-1-q2" value="a"><span><span class="opt-key">A</span> 路径由哈希的前两位做目录名<span class="opt-why">这是为了避免单目录文件过多。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-1-q2" value="b"><span><span class="opt-key">B</span> 内容经 zlib 压缩<span class="opt-why">松散对象是 zlib 流。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s3-1-q2" value="c"><span><span class="opt-key">C</span> 写入时会覆盖同名的旧对象<span class="opt-why">错。同名意味着内容相同；已存在就 freshen，不重写。对象写入是幂等的。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>内容寻址 + 已存在检查，让“写同一个对象”天然安全。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>如果对象头里漏掉长度，最直接的后果是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-1-q3" value="a"><span><span class="opt-key">A</span> 压缩率下降<span class="opt-why">这与压缩无关。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s3-1-q3" value="b"><span><span class="opt-key">B</span> 哈希不同，且读的时候无法知道正文边界<span class="opt-why">对。长度既参与哈希，也告诉解压器正文到哪里结束。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-1-q3" value="c"><span><span class="opt-key">C</span> 对象会变成 tree<span class="opt-why">类型字段才决定类型，不是长度。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>头同时承担“类型标记、长度边界、哈希前缀”三个职责。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈3 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s3-1">
+          <label class="sa-label" for="sa-s3-1">用 3–4 句话解释“内容寻址”为什么同时带来去重与完整性校验。指出哈希计算里必须包含哪两部分，以及漏掉任一部分会怎样。</label>
+          <textarea id="sa-s3-1" rows="4" placeholder="从“名字就是内容指纹”开始……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>对象名由“类型 + 长度 + NUL + 正文”算出，名字就是内容的指纹，所以相同内容必然得到相同名字，自然去重；读取时重算哈希并与文件名比对，就能发现内容被篡改或损坏。哈希输入必须包含头与正文：漏掉正文会让所有同类型同长度的对象撞名，漏掉头则无法区分 blob 与 tree，也无法在解压时确定正文边界。因此内容寻址把“存储位置”和“完整性验证”合并成了一件事。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我解释了“同内容 → 同名 → 去重”。</label>
+            <label><input type="checkbox"> 我解释了“读取时重算 → 校验完整性”。</label>
+            <label><input type="checkbox"> 我点明了头与正文都必须进入哈希。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>对象 = <code>类型 长度\0</code> + 正文，哈希覆盖全部字节。</li>
+        <li>松散对象路径是 <code>objects/&lt;前2位&gt;/&lt;其余&gt;</code>，内容 zlib 压缩。</li>
+        <li>写入先查存在，存在则 freshen；对象写入幂等。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="s3-2" data-title="3.2 读路径与 pack" data-read="7" data-check="5" data-next="下一节：实验 2">
+    <span class="section-label">模块 3 · 小节 2</span>
+    <h3>读路径与 pack</h3><span class="timechip">阅读 ≈7 分钟 · 检查 ≈5 分钟</span>
+
+    <div class="micro" data-micro data-good="a">
+      <p class="micro-q"><span class="tag">回忆</span>给定一个 OID，读对象时最先查哪里？</p>
+      <div class="micro-actions">
+        <button data-pick="a">松散对象 objects/xx/yyyy</button>
+        <button data-pick="b">pack 的 idx</button>
+        <button data-pick="c">alternates</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="对。松散对象是默认的第一站，没有才去查 pack idx。" data-msg-b="idx 是第二站。" data-msg-c="alternates 是更后面的兜底。"></div>
+    </div>
+
+    <div class="screen">
+      <p>对象不可能永远以松散文件存在。一个 20 年历史的仓库有几百万个对象，逐个文件存会浪费 inode，也无法做跨对象压缩。Git 的解法是 <strong><abbr class="term" tabindex="0" data-def="packfile：把大量对象装进一个文件，并用 delta 压缩相似对象；配一个 .idx 提供哈希到偏移的查找。">packfile</abbr></strong>，但读接口保持不变：给哈希，拿类型和内容。</p>
+      <figure class="diagram">
+        <div class="diagram-note">读一个对象的查找顺序</div>
+        <div class="mermaid">
+flowchart TB
+  Q["已知 OID"] --> L{"松散对象存在？"}
+  L -->|"是"| Z["解压 → 校验哈希 → 返回"]
+  L -->|"否"| P{"在某个 pack 的 idx 里？"}
+  P -->|"是"| D["按偏移读 pack<br/>遇到 delta 就追 base"]
+  P -->|"否"| A{"有 alternates / promisor？"}
+  A -->|"是"| O["去别的对象库找"]
+  A -->|"否"| E["报错：bad object"]
+  D --> Z
+      </div>
+      <figcaption>上层只看到 <code>odb_read_object_info</code>；松散、packed、alternates 的差异被对象库吸收。</figcaption>
+      <details><summary>图源</summary><pre>flowchart TB
+  Q[OID] --> L{loose?}
+  L -->|yes| Z[inflate + verify]
+  L -->|no| P{in pack idx?}
+  P -->|yes| D[read at offset + delta]
+  P -->|no| A{alternates?}
+  A -->|yes| O[other odb]
+  A -->|no| E[bad object]</pre></details>
+    </figure>
+
+    <div class="screen">
+      <h4>pack 的布局</h4>
+      <p>一个 pack 文件是：12 字节头（<code>PACK</code>、版本、对象数）、一串对象记录、末尾是整个文件内容的哈希。旁边的 <code>.idx</code> 是查找表：哈希 → pack 内偏移。</p>
+      <figure class="diagram">
+        <div class="diagram-note">pack 与 idx</div>
+        <div class="mermaid">
+flowchart LR
+  subgraph PACK[".pack"]
+    H["PACK · version · count"] --> O1["对象 1<br/>类型 + 长度 + 数据"]
+    O1 --> O2["对象 2<br/>OFS_DELTA → 对象 1"]
+    O2 --> O3["对象 3<br/>REF_DELTA → 另一个 pack 的 base"]
+    O3 --> TR["尾部校验哈希"]
+  end
+  subgraph IDX[".idx"]
+    F["fanout[256]"] --> S["排序后的 OID 表"]
+    S --> C["CRC 表"]
+    C --> X["偏移表"]
+  end
+  S -.->|"二分找到 OID"| X
+  X -.->|"偏移"| O1
+        </div>
+        <figcaption>pack 负责省空间，idx 负责可查找；delta 让相似对象只存差异。</figcaption>
+        <details><summary>图源</summary><pre>flowchart LR
+  PACK --> O1
+  O1 --> O2[OFS_DELTA]
+  O2 --> O3[REF_DELTA]
+  IDX --> fanout
+  fanout --> oids
+  oids --> offsets
+  offsets -.-> O1</pre></details>
+    </figure>
+      <p>打开 pack 时，Git 会校验签名与对象数，代码在 <code>packfile.c:561</code>：</p>
+      <div class="code">
+        <div class="code-head"><span>packfile.c:561</span></div>
+        <pre><code>	if (hdr.hdr_signature != htonl(PACK_SIGNATURE))
+		return error("file %s is not a GIT packfile",
+			     p-&gt;pack_name);
+	if (!pack_version_ok(hdr.hdr_version))
+		return error("packfile %s is version %"PRIu32" and not"
+			" supported (try upgrading GIT to a newer version)",
+			p-&gt;pack_name, ntohl(hdr.hdr_version));
+
+	/* Verify the pack matches its index. */
+	if (p-&gt;num_objects != ntohl(hdr.hdr_entries))
+		return error("packfile %s claims to have %"PRIu32" objects"
+			     " while index indicates %"PRIu32" objects",
+			     p-&gt;pack_name, ntohl(hdr.hdr_entries),
+			     p-&gt;num_objects);</code></pre>
+      </div>
+      <p>读对象时，<code>odb_read_object_info</code> 只需要类型和大小，不必把完整内容解压出来；只有真正取内容时才追 delta 链。这是 <code>git cat-file --batch-check</code> 比 <code>--batch</code> 快的原因之一。</p>
+    </div>
+
+    <div class="micro" data-micro data-good="c">
+      <p class="micro-q"><span class="tag">辨析</span>pack 里对象 A 以 delta 形式存成“相对对象 B 的差异”。要读出 A 的完整内容，Git 必须做什么？</p>
+      <div class="micro-actions">
+        <button data-pick="a">只解压 A 的记录</button>
+        <button data-pick="b">只读 idx</button>
+        <button data-pick="c">先拿到 B，再把差异应用上去</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="delta 记录不是完整内容，单独解压得不到 A。" data-msg-b="idx 只有哈希和偏移，没有内容。" data-msg-c="对。delta 链要逐层回溯到完整 base，再依次应用差异；链太长会触发重新打包。"></div>
+    </div>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span><code>.idx</code> 文件的核心作用是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-2-q1" value="a"><span><span class="opt-key">A</span> 存储对象内容<span class="opt-why">内容在 .pack。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s3-2-q1" value="b"><span><span class="opt-key">B</span> 把对象哈希映射到 pack 内偏移<span class="opt-why">对。idx 是 pack 的查找表：fanout、OID 表、CRC、偏移表。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-2-q1" value="c"><span><span class="opt-key">C</span> 存储 reflog<span class="opt-why">reflog 在 logs/ 下。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>pack 是“仓库”，idx 是“目录”。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>关于 delta 对象，哪句话正确？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-2-q2" value="a"><span><span class="opt-key">A</span> 它保存对象完整内容的压缩副本<span class="opt-why">那是普通（non-delta）对象。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s3-2-q2" value="b"><span><span class="opt-key">B</span> 它保存相对 base 的指令，读取时要先取 base<span class="opt-why">对。OFS_DELTA 用 pack 内偏移指 base，REF_DELTA 用 OID 指 base。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-2-q2" value="c"><span><span class="opt-key">C</span> 它只能由 gc 创建，push 不会产生<span class="opt-why">push/fetch 传输的 pack 同样会 deltify。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>delta 是“差异 + 指向 base 的引用”，不是一个独立完整对象。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>为什么 <code>cat-file --batch-check</code> 通常比 <code>--batch</code> 快？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-2-q3" value="a"><span><span class="opt-key">A</span> 它跳过了哈希校验<span class="opt-why">两者都要保证对象可信；差别在读多少内容。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s3-2-q3" value="b"><span><span class="opt-key">B</span> 它只取类型和大小，不必解压完整内容与追完 delta<span class="opt-why">对。读信息可以停在对象头，取内容才需要完整解压。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s3-2-q3" value="c"><span><span class="opt-key">C</span> 它只支持松散对象<span class="opt-why">它同样支持 packed 对象。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>“知道有多大”与“把内容拿出来”是两条不同深度的路径。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈3 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s3-2">
+          <label class="sa-label" for="sa-s3-2">用 3–4 句话解释：为什么有了 pack 还需要 idx？如果只有 pack，查找一个对象会退化成什么操作？</label>
+          <textarea id="sa-s3-2" rows="4" placeholder="从“哈希 → 偏移”想……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>pack 为了省空间把对象紧凑地放在一起，并大量使用 delta，所以对象在文件里的物理顺序与哈希顺序无关。若没有 idx，给定一个哈希只能顺序扫描整个 pack、逐个解压并计算哈希，复杂度是 O(对象数)，在大仓库上不可接受。idx 用 fanout 加排序后的 OID 表做二分，直接得到 pack 内偏移，把查找降到 O(log n)；找到偏移后仍要追 delta 链才能取完整内容。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我说出了 pack 的物理顺序与哈希顺序无关。</label>
+            <label><input type="checkbox"> 我说出了“没有 idx 只能顺序扫描”。</label>
+            <label><input type="checkbox"> 我提到了 fanout / 二分 / 偏移。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>读对象先查松散，再查 pack idx，再查 alternates。</li>
+        <li>pack 省空间，idx 提供 O(log n) 查找；delta 需要 base。</li>
+        <li>取“类型 + 大小”比取完整内容浅，batch-check 因此更快。</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="lab" data-lab="lab-object-meta" id="lab-object-meta">
+    <div class="lab-head">
+      <div class="lab-kicker">实验 2 · 24 分钟 · 难度：中高</div>
+      <h3>给 Git 加一个 <code>object-meta</code> 子命令</h3>
+      <p class="lab-sub">在真实 C 源码里走完“实现 → 声明 → 登记 → 构建”，并用真实二进制验证。</p>
+    </div>
+    <div class="lab-body">
+      <p class="lab-broken"><span class="label">当前状态</span><code>git object-meta</code> 不存在；执行会得到 <code>git: 'object-meta' is not a git command</code>。</p>
+
+      <div class="lab-grid">
+        <div>
+          <h4>任务</h4>
+          <ol class="task-list">
+            <li>新建 <code>builtin/object-meta.c</code>，实现 <code>cmd_object_meta</code>。</li>
+            <li>在 <code>builtin.h</code> 声明函数。</li>
+            <li>在 <code>git.c</code> 的 <code>commands[]</code> 登记，带 <code>RUN_SETUP</code>。</li>
+            <li>在 <code>Makefile</code> 的 <code>BUILTIN_OBJS</code> 加入目标文件。</li>
+            <li>让 <code>git object-meta &lt;object&gt;</code> 输出 <code>&lt;type&gt; &lt;size&gt;</code>；<code>-s</code> 只输出大小。</li>
+          </ol>
+          <h4>通过标准</h4>
+          <ul>
+            <li>commit / tree / blob 三类对象都正确。</li>
+            <li>支持任意 revision 写法（<code>HEAD</code>、<code>HEAD^{tree}</code>、<code>HEAD:path</code>）。</li>
+            <li>未知对象退出码非零；缺参数打印用法。</li>
+            <li><code>-s</code> 只打印一个十进制数字。</li>
+          </ul>
+          <h4>构建</h4>
+          <pre class="term"><span class="p">$</span> make -j8 NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1</pre>
+        </div>
+        <div>
+          <h4>只读预览 · 骨架</h4>
+          <div class="lab-preview"><pre>#include "builtin.h"
+#include "gettext.h"
+#include "object-name.h"
+#include "odb.h"
+#include "object.h"
+#include "parse-options.h"
+
+static const char * const builtin_object_meta_usage[] = {
+	"git object-meta [-s] &lt;object&gt;",
+	NULL
+};
+
+int cmd_object_meta(int argc, const char **argv, const char *prefix,
+		    struct repository *repo)
+{
+	/* TODO 1: 解析 -s 和 &lt;object&gt; */
+	/* TODO 2: 把 &lt;object&gt; 解析成 struct object_id */
+	/* TODO 3: 读取类型与大小 */
+	/* TODO 4: 按 -s 分支输出 */
+	return error("object-meta: not implemented");
+}</pre></div>
+          <div class="lab-actions">
+            <button type="button" class="btn" data-check>检查我的实验</button>
+            <span class="lab-status">会运行增量 make，再执行真实二进制</span>
+          </div>
+          <div class="lab-results" hidden></div>
+        </div>
+      </div>
+
+      <details class="hints">
+        <summary>三级提示（先自己想，卡住再展开）</summary>
+        <div class="hint"><b>提示 1 · 解析</b><code>parse_options</code> 的 <code>OPT_BOOL('s', NULL, &amp;size_only, ...)</code>；解析后 <code>argc</code> 应等于 1。</div>
+        <div class="hint"><b>提示 2 · 取 OID</b><code>repo_get_oid(repo, argv[0], &amp;oid)</code> 返回非零表示解析失败。</div>
+        <div class="hint"><b>提示 3 · 取类型与大小</b><code>int type = odb_read_object_info(repo-&gt;objects, &amp;oid, &amp;size);</code>，类型名用 <code>type_name(type)</code>。</div>
+      </details>
+
+      <p class="lab-foot">终端检查：<code>node course/check.mjs lab-object-meta</code>；恢复源码：<code>node course/lab.mjs restore lab-object-meta</code>。检查器不会改你的源码，只读并构建。</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<section class="module" id="m4" data-num="4" data-title="索引">
+<div class="wrap">
+  <header class="module-head">
+    <div class="module-num">04</div>
+    <h2>索引</h2>
+    <p class="lede">索引是 Git 里最像“数据库”的部分：一个二进制文件、按路径排序的条目、每个条目带着 stat 证据。理解它，才能理解 <code>status</code> 为什么快、<code>commit</code> 为什么不重扫工作区。</p>
+  </header>
+
+  <section class="section" id="s4-1" data-title="4.1 一张排好序的表" data-read="7" data-check="5" data-next="下一节：status 的快路径">
+    <span class="section-label">模块 4 · 小节 1</span>
+    <h3>一张排好序的表</h3><span class="timechip">阅读 ≈7 分钟 · 检查 ≈5 分钟</span>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">回忆</span>索引条目里，除了 blob 哈希和路径，还存了什么？</p>
+      <div class="micro-actions">
+        <button data-pick="a">文件内容的副本</button>
+        <button data-pick="b">stat 元数据与模式/标志位</button>
+        <button data-pick="c">提交信息</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="内容在 blob；索引只存指针与元数据。" data-msg-b="对。mtime/size/ino 等 stat 证据让 status 可以先比元数据，避免全量读文件。"></div>
+    </div>
+
+    <div class="screen">
+      <p><code>.git/index</code> 不是文本。它以 <code><abbr class="term" tabindex="0" data-def="DIRC：index 文件的魔数（0x44495243），读作 'dir cache'。后面跟版本、条目数与条目数组。">DIRC</abbr></code> 开头，后面是版本、条目数、条目数组、可选扩展，最后是校验哈希。文件本身还可能被 mmap，读的时候不复制整份内容。</p>
+      <figure class="diagram">
+        <div class="diagram-note">index 文件的字节布局</div>
+        <div class="mermaid">
+flowchart TB
+  subgraph HEADER["12 字节头"]
+    S["DIRC"] --> V["版本 2 / 3 / 4"]
+    V --> N["条目数"]
+  end
+  N --> E1["条目 1<br/>路径 + stat + OID + 标志"]
+  E1 --> E2["条目 2<br/>按路径排序"]
+  E2 --> X["扩展<br/>TREE / UNTR / link ..."]
+  X --> H["尾部哈希"]
+        </div>
+        <figcaption>条目按路径字节序排列；扩展是可选块，cache-tree 就存在 TREE 扩展里。</figcaption>
+        <details><summary>图源</summary><pre>flowchart TB
+  DIRC --> version --> entries
+  entries --> e1 --> e2
+  e2 --> extensions --> trailer</pre></details>
+      </figure>
+    </div>
+
+    <div class="screen">
+      <h4>条目里到底有什么</h4>
+      <div class="code">
+        <div class="code-head"><span>read-cache-ll.h:22 · struct cache_entry</span></div>
+        <pre><code>struct cache_entry {
+	struct hashmap_entry ent;
+	struct stat_data ce_stat_data;
+	unsigned int ce_mode;
+	unsigned int ce_flags;
+	unsigned int mem_pool_allocated;
+	unsigned int ce_namelen;
+	unsigned int index;	/* for link extension */
+	struct object_id oid;
+	char name[FLEX_ARRAY]; /* more */
+};</code></pre>
+      </div>
+      <div class="translate">
+        <div class="t-code">struct stat_data ce_stat_data;</div>
+        <div class="t-en"><p><b>stat 证据：</b>ctime、mtime、dev、ino、uid、gid、size。用来判断“工作区文件是否可能变过”。</p></div>
+      </div>
+      <div class="translate">
+        <div class="t-code">unsigned int ce_mode;</div>
+        <div class="t-en"><p><b>模式位：</b>普通文件 100644 / 100755、符号链接 120000、子模块 160000。只有可执行位有意义。</p></div>
+      </div>
+      <div class="translate">
+        <div class="t-code">unsigned int ce_flags;</div>
+        <div class="t-en"><p><b>标志：</b>低两位是合并冲突的 stage（0 正常，1/2/3 分别 base/ours/theirs）；高位是 skip-worktree、intent-to-add 等。</p></div>
+      </div>
+      <p>磁盘格式与内存结构不完全一样：字段按固定宽度序列化，路径后面补 NUL 到 8 字节边界（v2/v3）；v4 用前缀压缩路径。内存里则是上面这个带柔性数组的结构。</p>
+    </div>
+
+    <div class="micro order" data-order="DIRC 头|条目数组|扩展块|尾部哈希">
+      <p class="micro-q"><span class="tag">排序</span>按 <code>.git/index</code> 从前往后的字节顺序点击。</p>
+      <div class="order-seq" data-seq></div>
+      <div class="order-pool">
+        <button data-step="扩展块">扩展块</button>
+        <button data-step="DIRC 头">DIRC 头</button>
+        <button data-step="尾部哈希">尾部哈希</button>
+        <button data-step="条目数组">条目数组</button>
+      </div>
+      <p class="order-status" aria-live="polite"></p>
+      <button type="button" class="textbtn" data-order-reset>重来</button>
+    </div>
+
+    <figure class="diagram">
+      <div class="diagram-note">一个条目的状态</div>
+      <div class="mermaid">
+stateDiagram-v2
+  [*] --> Clean: add / checkout 写入
+  Clean --> Suspicious: stat 变了
+  Suspicious --> Dirty: 重新哈希不一致
+  Suspicious --> Clean: 重新哈希一致
+  Dirty --> Staged: 再次 add
+  Staged --> Clean: 写入索引
+  Clean --> Conflict: merge 冲突
+  Conflict --> Staged: 解决后 add
+      </div>
+      <figcaption>“干净”不是内容真的没变，而是“stat 证据支持它没变”。可疑时才回到内容层验证。</figcaption>
+      <details><summary>图源</summary><pre>stateDiagram-v2
+  [*] --> Clean
+  Clean --> Suspicious: stat changed
+  Suspicious --> Dirty: hash differs
+  Suspicious --> Clean: hash same
+  Dirty --> Staged: add
+  Staged --> Clean
+  Clean --> Conflict: merge
+  Conflict --> Staged</pre></details>
+    </figure>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span>索引条目的 stage 位（0/1/2/3）主要表示：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-1-q1" value="a"><span><span class="opt-key">A</span> 文件被修改了多少次<span class="opt-why">修改次数不在索引里。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s4-1-q1" value="b"><span><span class="opt-key">B</span> 合并冲突中的 base / ours / theirs 版本<span class="opt-why">对。stage 0 是正常条目；1/2/3 分别对应 merge base、当前分支、对方分支。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-1-q1" value="c"><span><span class="opt-key">C</span> 文件在目录中的深度<span class="opt-why">深度由路径本身决定。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>一个冲突路径可以同时有多条 stage 非零的记录，这就是 <code>git ls-files -u</code> 看到的内容。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>为什么索引条目要按路径排序？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-1-q2" value="a"><span><span class="opt-key">A</span> 为了让哈希更稳定<span class="opt-why">对象哈希与索引顺序无关。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s4-1-q2" value="b"><span><span class="opt-key">B</span> 支持二分查找，并能与工作区顺序合并扫描<span class="opt-why">对。status 可以一次顺序走过两边，遇到目录时整段跳过。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-1-q2" value="c"><span><span class="opt-key">C</span> 为了让 reflog 可读<span class="opt-why">reflog 与索引无关。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>顺序是性能设计，不是格式洁癖。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>v4 索引格式用路径前缀压缩，主要为了：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-1-q3" value="a"><span><span class="opt-key">A</span> 加密路径<span class="opt-why">索引不加密。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s4-1-q3" value="b"><span><span class="opt-key">B</span> 减少大量同目录长路径的重复字节<span class="opt-why">对。相邻条目共享前缀，只存新增部分，能显著缩小巨型仓库的索引。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-1-q3" value="c"><span><span class="opt-key">C</span> 去掉尾部哈希<span class="opt-why">尾部哈希仍在。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>前缀压缩对“同一目录下很多文件”最有效，这也是大型 monorepo 的场景。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈3 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s4-1">
+          <label class="sa-label" for="sa-s4-1">用 3–4 句话解释：索引条目为什么同时需要 blob 哈希和 stat 信息？只保留其中一个会怎样？</label>
+          <textarea id="sa-s4-1" rows="4" placeholder="一个回答“内容是什么”，另一个回答“还用不用再读”……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>blob 哈希回答“下一次提交应该指向哪份内容”，没有它就无法写出 tree；stat 信息回答“工作区文件是否还值得重新读”，没有它每次 status 都要哈希所有文件。两者结合才能既正确又快：先用便宜的元数据判断是否需要验证，只有可疑时才付出读文件与哈希的代价。只留哈希会让 status 退化为全量哈希；只留 stat 则无法知道文件内容对应哪个对象。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我说明了 blob 哈希服务于“写 tree”。</label>
+            <label><input type="checkbox"> 我说明了 stat 服务于“避免全量读文件”。</label>
+            <label><input type="checkbox"> 我说出了只保留其一的退化后果。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>index = DIRC 头 + 排序条目 + 扩展 + 校验哈希。</li>
+        <li>条目含模式、stage、blob OID、stat 证据与路径。</li>
+        <li>磁盘格式与内存结构不同；v4 做路径前缀压缩。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="s4-2" data-title="4.2 status 的快路径" data-read="6" data-check="4" data-next="下一节：引用与 HEAD">
+    <span class="section-label">模块 4 · 小节 2</span>
+    <h3><code>status</code> 的快路径</h3><span class="timechip">阅读 ≈6 分钟 · 检查 ≈4 分钟</span>
+
+    <div class="micro" data-micro data-good="a">
+      <p class="micro-q"><span class="tag">回忆</span>判断一个已跟踪文件是否修改，status 先比什么？</p>
+      <div class="micro-actions">
+        <button data-pick="a">stat 元数据</button>
+        <button data-pick="b">文件内容哈希</button>
+        <button data-pick="c">tree OID</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="对。元数据一致就跳过；不一致才进入哈希验证。" data-msg-b="哈希是慢路径，只在可疑时做。" data-msg-c="tree 是提交层的结构，不用于单文件判断。"></div>
+    </div>
+
+    <div class="screen">
+      <p><code>git status</code> 要回答三个问题：哪些已暂存、哪些改了没暂存、哪些没被跟踪。第三项最贵，因为要遍历工作区。索引与 cache-tree 的设计就是为了尽量不读内容。</p>
+      <figure class="diagram">
+        <div class="diagram-note">判断一个路径是否修改</div>
+        <div class="mermaid">
+flowchart TB
+  A["lstat 工作区文件"] --> B{"索引里有这个路径？"}
+  B -->|"没有"| U["untracked"]
+  B -->|"有"| C{"stat 与索引一致？"}
+  C -->|"一致"| D{"racy？<br/>mtime 与索引时间同秒"}
+  D -->|"否"| CLEAN["干净，跳过"]
+  D -->|"是"| H["读内容 + 哈希"]
+  C -->|"不一致"| H
+  H --> E{"OID 相同？"}
+  E -->|"是"| F["更新 stat，标记干净"]
+  E -->|"否"| G["modified"]
+      </div>
+      <figcaption>便宜的判断在前，昂贵的哈希在后；racy 检查防止“同一秒内改动”被 stat 骗过。</figcaption>
+      <details><summary>图源</summary><pre>flowchart TB
+  A[lstat] --> B{in index?}
+  B -->|no| U[untracked]
+  B -->|yes| C{stat matches?}
+  C -->|no| H[hash content]
+  C -->|yes| D{racy?}
+  D -->|no| CLEAN
+  D -->|yes| H
+  H --> E{oid same?}
+  E -->|yes| F[refresh stat]
+  E -->|no| G[modified]</pre></details>
+    </figure>
+      <p>所谓 <abbr class="term" tabindex="0" data-def="racy clean：文件 mtime 与索引文件 mtime 落在同一秒时，Git 无法仅凭时间判断内容是否在索引写完后又被改过，于是强制重算哈希。">racy clean</abbr>，是这套缓存最微妙的边界：时间戳精度不够时，元数据可能“看起来没变”，但内容已经变了。</p>
+    </div>
+
+    <div class="screen">
+      <h4>三层加速</h4>
+      <ul>
+        <li><strong>stat 缓存</strong>：最常见的路径，只比元数据，不读内容。</li>
+        <li><strong>cache-tree</strong>：提交时复用未变目录的 tree OID；status 也能用 TREE 扩展判断整棵子树是否干净。</li>
+        <li><strong>untracked cache</strong>：记录目录的 mtime 与已扫描结果，目录没变就跳过整段。</li>
+      </ul>
+      <p>再往上还有 split index（共享大部分条目，只写变化部分）与 sparse index（用一个目录条目代表整棵未展开的子树）。它们都在解决同一个问题：<strong>索引变大后，如何避免每次操作都碰全部条目</strong>。</p>
+      <figure class="diagram">
+        <div class="diagram-note">优化各自挡住哪一层成本</div>
+        <div class="mermaid">
+flowchart LR
+  S["status"] --> A["逐路径 stat<br/>O(条目数)"]
+  A --> B["读内容 + 哈希<br/>O(文件大小)"]
+  B --> C["扫描未跟踪目录<br/>O(目录项)"]
+  A -.-> A1["stat 缓存"]
+  B -.-> B1["cache-tree / TREE 扩展"]
+  C -.-> C1["untracked cache"]
+  A -.-> A2["split index"]
+  A -.-> A3["sparse index"]
+        </div>
+        <figcaption>不同优化不是互相替代，而是分别削减某一层的常数或复杂度。</figcaption>
+        <details><summary>图源</summary><pre>flowchart LR
+  S[status] --> A[stat each path]
+  A --> B[hash content]
+  B --> C[scan untracked]
+  A -.-> A1[stat cache]
+  B -.-> B1[cache-tree]
+  C -.-> C1[untracked cache]</pre></details>
+      </figure>
+    </div>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">预测</span>你把文件内容改了又改回原样，mtime 变了。下一次 <code>status</code> 会显示 modified 吗？</p>
+      <div class="micro-actions">
+        <button data-pick="a">会，mtime 变了就算修改</button>
+        <button data-pick="b">不会，重新哈希后发现内容一致</button>
+        <button data-pick="c">会，直到重新 add</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="stat 只是触发器；mtime 变了会进入哈希验证，但结果仍以内容为准。" data-msg-b="对。stat 不一致只让该路径进入慢路径，哈希相同就刷新 stat 并标记干净。"></div>
+    </div>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span>如果文件 mtime 和大小都没变，但内容被改了（假设能绕过时间精度），Git 最可能：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-2-q1" value="a"><span><span class="opt-key">A</span> 一定发现，因为每次都哈希<span class="opt-why">那正是 stat 缓存要避免的事。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s4-2-q1" value="b"><span><span class="opt-key">B</span> 被 stat 缓存骗过，除非触发 racy 检查或强制刷新<span class="opt-why">对。这是缓存的理论边界；racy 逻辑专门覆盖“同一秒内写入”的常见情形。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-2-q1" value="c"><span><span class="opt-key">C</span> 直接报错<span class="opt-why">不会报错，只会给出可能过时的判断。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>所有 stat 缓存都有这个边界；Git 用 racy 检查与 <code>--refresh</code> 降低风险，而不是假装没有。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>untracked cache 主要避免：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-2-q2" value="a"><span><span class="opt-key">A</span> 重复读取已跟踪文件的内容<span class="opt-why">那是 stat 缓存与哈希验证的职责。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s4-2-q2" value="b"><span><span class="opt-key">B</span> 重复扫描没变化的目录去列未跟踪文件<span class="opt-why">对。它缓存目录 mtime 与扫描结果，目录没变就整段跳过。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-2-q2" value="c"><span><span class="opt-key">C</span> 重复写 reflog<span class="opt-why">与 reflog 无关。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>未跟踪文件没有索引条目，所以只能靠目录级缓存。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>sparse index 与 sparse checkout 的关系是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-2-q3" value="a"><span><span class="opt-key">A</span> 两者无关<span class="opt-why">sparse index 是为 sparse checkout 设计的索引表示。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s4-2-q3" value="b"><span><span class="opt-key">B</span> sparse index 用一个目录条目代表未展开的稀疏目录<span class="opt-why">对。它让“只检出部分目录”的仓库不必在索引里保存那些目录下的每个文件。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s4-2-q3" value="c"><span><span class="opt-key">C</span> sparse index 会删除对象库里的 blob<span class="opt-why">对象仍在，只是工作区不检出。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>它压缩的是索引表示，不是对象存储。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈3 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s4-2">
+          <label class="sa-label" for="sa-s4-2">用 3–4 句话解释 racy clean 是什么、为什么必须存在。再说明 <code>git status</code> 在“stat 一致”和“stat 不一致”两条路径上各做什么。</label>
+          <textarea id="sa-s4-2" rows="4" placeholder="从时间戳精度开始……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>索引写入时记录文件 mtime；如果文件在索引写完后、同一时间戳精度内又被修改，mtime 可能仍然“一致”，stat 缓存就会误判为干净。racy clean 检查发现文件 mtime 与索引文件 mtime 落在同一秒时，强制读取内容并重算哈希，避免这种误判。stat 一致时 status 直接标记干净并跳过；stat 不一致时进入慢路径，读文件、算 blob 哈希，与索引里的 OID 比较，相同则刷新 stat，不同则报告 modified。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我解释了“同一秒内修改”导致的时间戳盲区。</label>
+            <label><input type="checkbox"> 我说出了 racy 时强制重算哈希。</label>
+            <label><input type="checkbox"> 我区分了 stat 一致与不一致两条路径。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>status 先用 stat 判断，再用哈希验证可疑路径。</li>
+        <li>racy clean 处理时间戳精度不足的边界。</li>
+        <li>cache-tree、untracked cache、split/sparse index 各削减一层成本。</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="lab" data-lab="lab-index" id="lab-index">
+    <div class="lab-head">
+      <div class="lab-kicker">实验 4 · 20 分钟 · 难度：中高</div>
+      <h3>直接读 <code>.git/index</code> 的二进制</h3>
+      <p class="lab-sub">不用 <code>git ls-files</code>。自己按 DIRC 格式解析版本、条目、OID、模式和 stage。</p>
+    </div>
+    <div class="lab-body">
+      <p class="lab-broken"><span class="label">当前状态</span><code>index-report.py</code> 只抛出 <code>not implemented</code>；沙盒里的索引已经准备好，但没人读它。</p>
+
+      <div class="lab-grid">
+        <div>
+          <h4>任务</h4>
+          <ol class="task-list">
+            <li>读 12 字节头：<code>DIRC</code>、版本（必须为 2）、条目数。</li>
+            <li>逐条解析：40 字节 stat、20 字节 OID、2 字节 flags、路径。</li>
+            <li>路径后补 NUL 到 8 字节边界；解析完 count 个条目。</li>
+            <li>输出 JSON，按索引原顺序（即路径字节序）。</li>
+          </ol>
+          <h4>输出格式</h4>
+          <pre class="term">{"version":2,"entries":[
+  {"path":"a.txt","mode":"100644","stage":0,"oid":"..."},
+  {"path":"run.sh","mode":"100755","stage":0,"oid":"..."}
+]}</pre>
+          <h4>交付物</h4>
+          <div class="pathline"><code>course/work/lab-index/index-report.py</code><button class="copy" data-copy="course/work/lab-index/index-report.py">复制路径</button></div>
+          <h4>约束</h4>
+          <ul>
+            <li>不能调用任何 git 命令；检查器会把 <code>git</code> 替换成失败 shim。</li>
+            <li>只支持 v2；沙盒会用 <code>git update-index --index-version 2</code> 固定版本。</li>
+            <li>输出必须是纯 JSON，不能夹调试文字。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>只读预览</h4>
+          <div class="lab-preview"><pre>import json, struct, sys
+
+repo = sys.argv[1] if len(sys.argv) &gt; 1 else "."
+data = open(f"{repo}/.git/index", "rb").read()
+
+# TODO 1: magic / version / count
+# TODO 2: 40 字节 stat + 20 字节 OID + 2 字节 flags
+# TODO 3: namelen = flags &amp; 0xFFF
+# TODO 4: 输出 JSON
+
+raise SystemExit("not implemented")</pre></div>
+          <div class="lab-actions">
+            <button type="button" class="btn" data-check>检查我的实验</button>
+            <span class="lab-status">会创建一个含中文名与可执行文件的索引</span>
+          </div>
+          <div class="lab-results" hidden></div>
+        </div>
+      </div>
+
+      <details class="hints">
+        <summary>三级提示</summary>
+        <div class="hint"><b>提示 1 · 头</b><code>magic, version, count = struct.unpack("&gt;4sII", data[:12])</code>；<code>magic != b"DIRC"</code> 就退出。</div>
+        <div class="hint"><b>提示 2 · 条目</b>从偏移 12 开始：<code>fields = struct.unpack("&gt;10I", data[off:off+40])</code>，<code>mode = fields[6]</code>；随后 20 字节 OID、2 字节 flags。</div>
+        <div class="hint"><b>提示 3 · 长度与标志</b><code>namelen = flags &amp; 0xFFF</code>，<code>stage = (flags &gt;&gt; 12) &amp; 3</code>；整条长度 <code>(62 + namelen + 8) &amp; ~7</code>，路径按 UTF-8 解码。</div>
+      </details>
+
+      <p class="lab-foot">终端检查：<code>node course/check.mjs lab-index</code>；恢复骨架：<code>node course/lab.mjs restore lab-index</code>。</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<section class="module" id="m5" data-num="5" data-title="引用与可达性">
+<div class="wrap">
+  <header class="module-head">
+    <div class="module-num">05</div>
+    <h2>引用与可达性</h2>
+    <p class="lede">对象层是只增不改的，真正让历史“活”起来的是引用：分支、HEAD、reflog。它们决定哪些对象算“还在”，也决定了 gc 能删什么、你能找回什么。</p>
+    <figure class="video-block">
+      <video controls preload="metadata" poster="assets/git-m5-poster.jpg" aria-label="模块 5 短片：引用、锁与可达性">
+        <source src="assets/git-m5.mp4" type="video/mp4">
+        你的浏览器不支持视频标签。
+      </video>
+      <figcaption><span>模块短片 · 32 秒</span><span>HEAD → ref → reflog → 可达性</span></figcaption>
+    </figure>
+  </header>
+
+  <section class="section" id="s5-1" data-title="5.1 引用就是一个文件" data-read="7" data-check="5" data-next="下一节：可达性与找回">
+    <span class="section-label">模块 5 · 小节 1</span>
+    <h3>引用就是一个文件</h3><span class="timechip">阅读 ≈7 分钟 · 检查 ≈5 分钟</span>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">回忆</span>普通状态下，<code>.git/HEAD</code> 的内容是什么？</p>
+      <div class="micro-actions">
+        <button data-pick="a">一行 commit 哈希</button>
+        <button data-pick="b"><code>ref: refs/heads/&lt;branch&gt;</code></button>
+        <button data-pick="c">空文件</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="那是 detached HEAD。" data-msg-b="对。HEAD 先指向分支，分支文件里才是哈希；这是两层间接。"></div>
+    </div>
+
+    <div class="screen">
+      <p>打开 <code>.git/refs/heads/main</code>，你会看到 40 个十六进制字符加一个换行。没有 JSON，没有数据库。HEAD 稍特殊：它通常写着 <code>ref: refs/heads/main</code>，是一个<strong><abbr class="term" tabindex="0" data-def="符号引用：内容形如 ref: refs/heads/main，表示“我指向另一个引用”，而不是直接指向对象。">符号引用</abbr></strong>。</p>
+      <figure class="diagram">
+        <div class="diagram-note">引用如何指向对象</div>
+        <div class="mermaid">
+flowchart LR
+  H["HEAD<br/>ref: refs/heads/main"] --> M["refs/heads/main<br/>a1b2c3d..."]
+  H -.->|"detached 时"| C3["直接写 commit 哈希"]
+  M --> C3["commit a1b2c3d"]
+  C3 --> C2["parent"]
+  C2 --> C1["parent"]
+  T["refs/tags/v1"] --> C2
+  R["refs/remotes/origin/main"] --> C2
+        </div>
+        <figcaption>分支、标签、远端跟踪分支都是引用；区别只在名字空间，不在机制。</figcaption>
+        <details><summary>图源</summary><pre>flowchart LR
+  HEAD --> main
+  HEAD -. detached .-> C3
+  main --> C3
+  C3 --> C2 --> C1
+  tag --> C2
+  remote --> C2</pre></details>
+      </figure>
+      <p>引用多到一定程度后，逐个文件会很碎，于是 Git 会把它们打包进 <code>.git/packed-refs</code>。松散引用仍然优先；更新一个已打包的引用时，Git 会写一个松散文件覆盖它。</p>
+    </div>
+
+    <div class="screen">
+      <h4>更新引用的锁协议</h4>
+      <p>引用更新必须是原子的：不能出现“文件写了一半”的状态。Git 用 <code>.lock</code> 文件 + <code>rename</code>，并在成功后追加 reflog。</p>
+      <div class="code">
+        <div class="code-head"><span>refs/files-backend.c:2058 · write_ref_to_lockfile</span></div>
+        <pre><code>static enum ref_transaction_error write_ref_to_lockfile(
+		struct files_ref_store *refs, struct ref_lock *lock,
+		const struct object_id *oid, struct strbuf *err)
+{
+	static char term = '\n';
+	int fd;
+
+	fd = get_lock_file_fd(&amp;lock-&gt;lk);
+	if (write_in_full(fd, oid_to_hex(oid),
+			  refs-&gt;base.repo-&gt;hash_algo-&gt;hexsz) &lt; 0 ||
+	    write_in_full(fd, &amp;term, 1) &lt; 0 ||
+	    fsync_component(FSYNC_COMPONENT_REFERENCE,
+			    get_lock_file_fd(&amp;lock-&gt;lk)) &lt; 0 ||
+	    close_ref_gently(lock) &lt; 0) {
+		...
+		return REF_TRANSACTION_ERROR_GENERIC;
+	}
+	return 0;
+}</code></pre>
+      </div>
+      <div class="translate">
+        <div class="t-code">write_in_full(fd, oid_to_hex(oid), hexsz)</div>
+        <div class="t-en"><p><b>写 OID：</b>写入 40（SHA-1）或 64（SHA-256）个十六进制字符，不含换行。</p></div>
+      </div>
+      <div class="translate">
+        <div class="t-code">fsync_component(FSYNC_COMPONENT_REFERENCE, fd)</div>
+        <div class="t-en"><p><b>落盘再改名：</b>先把新值刷到磁盘，再原子替换；崩溃时读端只会看到完整的旧值或完整的新值。</p></div>
+      </div>
+      <p>上层通过 <code>refs_update_ref</code> 发起事务：先准备所有锁，再提交。HEAD 的更新也走同一条路——它最终解析到分支文件，所以“提交”在引用层就是改一个分支文件。</p>
+      <div class="code">
+        <div class="code-head"><span>refs.c:1579 · refs_update_ref</span></div>
+        <pre><code>int refs_update_ref(struct ref_store *refs, const char *msg,
+		    const char *refname, const struct object_id *new_oid,
+		    const struct object_id *old_oid, unsigned int flags,
+		    enum action_on_err onerr)
+{
+	...
+	t = ref_store_transaction_begin(refs, 0, &amp;err);
+	if (!t ||
+	    ref_transaction_update(t, refname, new_oid, old_oid,
+				   NULL, NULL, flags, msg, &amp;err) ||
+	    ref_transaction_commit(t, &amp;err)) {
+		ret = 1;
+		...
+	}</code></pre>
+      </div>
+    </div>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">预测</span>你处于 detached HEAD，提交一次。此时 <code>.git/HEAD</code> 的内容最可能是？</p>
+      <div class="micro-actions">
+        <button data-pick="a"><code>ref: refs/heads/main</code></button>
+        <button data-pick="b">一行 commit 哈希</button>
+        <button data-pick="c">空文件</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="那是附着在分支上的状态；detached 时 HEAD 直接指向提交。" data-msg-b="对。detached HEAD 把 HEAD 从符号引用变成直接写哈希；新提交没有分支引用它，只靠 HEAD 和 reflog 保活。"></div>
+    </div>
+
+    <figure class="diagram">
+      <div class="diagram-note">一次引用事务</div>
+      <div class="mermaid">
+stateDiagram-v2
+  [*] --> Locked: 创建 refs/heads/main.lock
+  Locked --> Prepared: 写入新 OID + fsync
+  Prepared --> Committed: rename 覆盖 main
+  Committed --> Logged: 追加 reflog
+  Logged --> [*]
+  Prepared --> Aborted: 校验失败
+  Aborted --> [*]: 删除 .lock
+      </div>
+      <figcaption>读到的旧值永远完整，新值要么完整出现，要么完全不出现；reflog 记录的是“从哪个旧值到哪个新值”。</figcaption>
+      <details><summary>图源</summary><pre>stateDiagram-v2
+  [*] --> Locked
+  Locked --> Prepared: write + fsync
+  Prepared --> Committed: rename
+  Committed --> Logged: reflog
+  Prepared --> Aborted</pre></details>
+    </figure>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span>普通状态下 <code>.git/HEAD</code> 的内容是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-1-q1" value="a"><span><span class="opt-key">A</span> 当前 commit 的哈希<span class="opt-why">那是 detached HEAD 的状态。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s5-1-q1" value="b"><span><span class="opt-key">B</span> <code>ref: refs/heads/&lt;branch&gt;</code><span class="opt-why">对。HEAD 是符号引用，指向一个分支引用；分支文件里才是哈希。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-1-q1" value="c"><span><span class="opt-key">C</span> 分支名加作者信息<span class="opt-why">没有作者信息，也没有这种格式。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>HEAD → 分支 → 提交，是两层间接。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>引用更新为什么需要 <code>.lock</code> 文件？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-1-q2" value="a"><span><span class="opt-key">A</span> 为了加密引用内容<span class="opt-why">引用是明文。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s5-1-q2" value="b"><span><span class="opt-key">B</span> 让“准备新值”和“替换旧值”分离，避免读到半个文件<span class="opt-why">对。写入 lock、fsync，再 rename 覆盖，读端要么看到旧文件，要么看到新文件。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-1-q2" value="c"><span><span class="opt-key">C</span> 为了记录 reflog<span class="opt-why">reflog 是提交成功后单独追加的。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>这是典型的“写临时文件 + 原子改名”模式，和对象写入一样。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>一个分支已经存在于 <code>packed-refs</code> 中，你再提交一次，会发生什么？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-1-q3" value="a"><span><span class="opt-key">A</span> 直接改写 packed-refs 的对应行<span class="opt-why">packed-refs 是只读的批量表示，不会为单次更新原地改。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s5-1-q3" value="b"><span><span class="opt-key">B</span> 新建一个同名的松散引用，读时松散优先<span class="opt-why">对。松散引用覆盖 packed-refs 中的旧值；后续 gc 可能重新打包。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-1-q3" value="c"><span><span class="opt-key">C</span> 报错，必须先删除 packed 引用<span class="opt-why">不需要，松散文件会自然覆盖。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>“松散优先于打包”是引用读取的基本规则。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈3 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s5-1">
+          <label class="sa-label" for="sa-s5-1">用 3–4 句话说明：一次提交如何从“写对象”走到“分支指向新提交”？指出锁文件与 reflog 各自解决什么问题。</label>
+          <textarea id="sa-s5-1" rows="4" placeholder="对象写完并不等于提交完成……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>提交对象写入对象库后，<code>update_head_with_reflog</code> 发起引用事务，把 HEAD 的目标从旧提交改为新提交。引用层先创建 <code>.lock</code> 并写入新哈希、fsync，再用 rename 原子替换分支文件，因此读端不会看到半个引用。锁解决的是并发与原子性；reflog 在成功后追加一条“旧值 → 新值”的记录，解决的是可追溯与误操作恢复。两者都在对象写入之后，所以对象可能先于引用存在。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我按“写对象 → 引用事务”说明了顺序。</label>
+            <label><input type="checkbox"> 我点明了 lock + rename 的原子性作用。</label>
+            <label><input type="checkbox"> 我说出了 reflog 记录旧值/新值。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>分支 = 一个写着哈希的文件；HEAD = 指向分支的符号引用。</li>
+        <li>松散引用优先于 packed-refs。</li>
+        <li>引用更新用 lock + rename，成功后追加 reflog。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="s5-2" data-title="5.2 可达性与找回" data-read="7" data-check="5" data-next="下一节：实验 3">
+    <span class="section-label">模块 5 · 小节 2</span>
+    <h3>可达性与找回</h3><span class="timechip">阅读 ≈7 分钟 · 检查 ≈5 分钟</span>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">回忆</span>gc 决定一个对象能不能删，主要看什么？</p>
+      <div class="micro-actions">
+        <button data-pick="a">对象存在了多久</button>
+        <button data-pick="b">是否可达，以及 reflog 是否过期</button>
+        <button data-pick="c">分支数量</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="年龄只影响 prune 的宽限期，不是可达性。" data-msg-b="对。引用、reflog、索引等根决定可达；不可达且过期才会被删。"></div>
+    </div>
+
+    <div class="screen">
+      <p>对象库不关心“历史”，它只存对象。是引用把某些提交标成“仍然可达”，gc 再从这些根出发，标记所有能走到的对象；走不到的就是垃圾。但垃圾不一定立刻删——reflog、索引、其他引用都可能是根。</p>
+      <figure class="diagram">
+        <div class="diagram-note">可达与不可达</div>
+        <div class="mermaid">
+flowchart LR
+  subgraph ROOTS["根"]
+    M["refs/heads/main"]
+    T["refs/tags/v1"]
+    L["reflog"]
+  end
+  M --> C4["C4"]
+  C4 --> C3["C3"]
+  C3 --> C2["C2"]
+  C2 --> C1["C1"]
+  T --> C2
+  L -.-> C5["C5 孤立提交"]
+  C5 --> C3
+  C5 -.->|"reflog 过期 + gc"| X["可被 prune"]
+  style C5 fill:#FDF0EC,stroke:#B83A1F
+  style X fill:#F7F7F8,stroke:#5B6470
+        </div>
+        <figcaption>同一个 C5，有 reflog 记着就暂时安全；reflog 过期且没有引用后，才会进入可删除集合。</figcaption>
+        <details><summary>图源</summary><pre>flowchart LR
+  main --> C4 --> C3 --> C2 --> C1
+  tag --> C2
+  reflog -.-> C5
+  C5 --> C3
+  C5 -. prune .-> X</pre></details>
+      </figure>
+      <p><abbr class="term" tabindex="0" data-def="可达性：从引用、HEAD、reflog、索引等根出发，沿 commit 的 parent、tree 的条目、tag 的 target 走，能走到的对象集合。">可达性</abbr>不是“存在时间”，也不是“有没有被 push”。一个提交可以很旧但被标签引用；也可以很新但没有任何根指向它。</p>
+    </div>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">预测</span>reflog 已过期，又执行了 <code>git gc --prune=now</code>。还能用 <code>fsck</code> 找回那个提交吗？</p>
+      <div class="micro-actions">
+        <button data-pick="a">能，对象库永远保留</button>
+        <button data-pick="b">不能，对象已经被删除</button>
+        <button data-pick="c">取决于有没有远端</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="对象不是永久保留的；prune 就是不可逆的分界点。" data-msg-b="对。reflog 过期后对象不可达，prune 会真正删除它；fsck 也就无从报告。"></div>
+    </div>
+
+    <div class="screen">
+      <h4>误删之后，为什么还能找回来</h4>
+      <p>三种常见证据源，按可靠性排序：</p>
+      <ol>
+        <li><strong>reflog</strong>：HEAD 与各分支的移动记录，包含旧值、新值、动作和时间。</li>
+        <li><strong>fsck</strong>：扫描对象库，报告 <abbr class="term" tabindex="0" data-def="dangling object：存在于对象库，但没有任何引用、reflog 或索引能到达它的对象。">dangling</abbr> / unreachable 的 commit、tree、blob。</li>
+        <li><strong>索引与工作区</strong>：即使提交没了，暂存区仍可能指向 blob。</li>
+      </ol>
+      <figure class="diagram">
+        <div class="diagram-note">找回一个丢失提交的路径</div>
+        <div class="mermaid">
+flowchart TB
+  A["分支被删 / reset --hard"] --> B{"reflog 还在？"}
+  B -->|"是"| C["git reflog 找旧值"]
+  B -->|"否"| D["git fsck --lost-found"]
+  D --> E["逐个 cat-file -p 看提交信息"]
+  C --> F["git branch rescue &lt;sha&gt;"]
+  E --> F
+  F --> G["git fsck 验证可达"]
+      </div>
+      <figcaption>先找证据，再建引用；不要急着 gc，也不要先改工作区。</figcaption>
+      <details><summary>图源</summary><pre>flowchart TB
+  A[ref deleted] --> B{reflog?}
+  B -->|yes| C[reflog]
+  B -->|no| D[fsck --lost-found]
+  D --> E[cat-file -p]
+  C --> F[branch rescue sha]
+  E --> F
+  F --> G[fsck verify]</pre></details>
+    </figure>
+      <p>注意 <code>git fsck --lost-found</code> 会把找到的对象写进 <code>.git/lost-found/</code>，但这只是方便你查看，不是恢复引用本身。真正让它“回来”的动作是新建一个引用（分支、标签），让对象重新可达。</p>
+      <p>另外，<code>git gc</code> 默认会保留两周内的不可达对象（<code>gc.pruneExpire</code>），并尊重 reflog。很多“删了还能救”的窗口来自这些默认值，而不是 Git 有回收站。</p>
+    </div>
+
+    <div class="micro order" data-order="确认丢失的提交|用 reflog 或 fsck 找候选|用 cat-file 核对提交信息|新建 rescue 分支指向它">
+      <p class="micro-q"><span class="tag">排序</span>把“找回丢失提交”的操作按安全顺序点出来。</p>
+      <div class="order-seq" data-seq></div>
+      <div class="order-pool">
+        <button data-step="新建 rescue 分支指向它">新建 rescue 分支指向它</button>
+        <button data-step="确认丢失的提交">确认丢失的提交</button>
+        <button data-step="用 cat-file 核对提交信息">用 cat-file 核对提交信息</button>
+        <button data-step="用 reflog 或 fsck 找候选">用 reflog 或 fsck 找候选</button>
+      </div>
+      <p class="order-status" aria-live="polite"></p>
+      <button type="button" class="textbtn" data-order-reset>重来</button>
+    </div>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span>一个提交没有任何分支/标签指向，但 HEAD reflog 里还有记录。它现在：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-2-q1" value="a"><span><span class="opt-key">A</span> 已经是不可达对象，下一次命令就会被删<span class="opt-why">删除不是命令的副作用；要 gc/prune 且过期。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s5-2-q1" value="b"><span><span class="opt-key">B</span> 仍可能被 reflog 保活，直到 reflog 过期并被 prune<span class="opt-why">对。reflog 是 gc 的可达性根之一。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-2-q1" value="c"><span><span class="opt-key">C</span> 自动变成标签<span class="opt-why">不会自动创建引用。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>“没有分支指向”不等于“立刻可删”；reflog 也是根。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span><code>git fsck --lost-found</code> 做的事情，最准确的是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-2-q2" value="a"><span><span class="opt-key">A</span> 自动把丢失提交恢复到 main<span class="opt-why">它不会移动分支。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s5-2-q2" value="b"><span><span class="opt-key">B</span> 扫描对象库，报告不可达对象，并把找到的对象放进 lost-found<span class="opt-why">对。它提供证据与副本路径，是否建引用由你决定。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-2-q2" value="c"><span><span class="opt-key">C</span> 删除不可达对象<span class="opt-why">删除是 prune/gc 的事。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>fsck 是“体检 + 报告”，不是“自动修复”。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>为什么误删后第一件事通常是“停止 gc / 不要再 prune”？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-2-q3" value="a"><span><span class="opt-key">A</span> gc 会删除 reflog 文件<span class="opt-why">gc 可能过期 reflog，但重点是对象被 prune。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s5-2-q3" value="b"><span><span class="opt-key">B</span> 不可达对象一旦被 prune，证据就真的消失了<span class="opt-why">对。先保住对象，再用 reflog/fsck 找候选，最后建引用。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s5-2-q3" value="c"><span><span class="opt-key">C</span> gc 会改写提交哈希<span class="opt-why">对象哈希不会因为 gc 改变。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>恢复的前提是对象还在；prune 是不可逆的分界点。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈3 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s5-2">
+          <label class="sa-label" for="sa-s5-2">用 3–4 句话解释：为什么“删除分支”通常不会立刻删除提交？reflog、fsck、gc 三者在“找回”里各扮演什么角色？</label>
+          <textarea id="sa-s5-2" rows="4" placeholder="从“引用是根”开始……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>删除分支只是移除一个引用，提交对象仍然在对象库里；只要还有 reflog、标签或其他引用能到达它，gc 就不会把它当垃圾。reflog 提供“曾经指向哪里”的时间线，是最快的证据；fsck 在 reflog 过期后扫描对象库，报告 dangling/unreachable 对象；gc 则是最终执行者，在 reflog 过期且对象不可达时才 prune。找回的动作不是“让 gc 反悔”，而是新建一个引用，让对象重新可达。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我说明了“删引用 ≠ 删对象”。</label>
+            <label><input type="checkbox"> 我区分了 reflog、fsck、gc 的职责。</label>
+            <label><input type="checkbox"> 我点明了“新建引用让对象重新可达”。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>可达性从引用、reflog、索引等根出发；gc 只删不可达且过期的对象。</li>
+        <li>reflog 是最快的证据，fsck 是兜底扫描。</li>
+        <li>恢复 = 新建引用，而不是修改对象。</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="lab" data-lab="lab-recover" id="lab-recover">
+    <div class="lab-head">
+      <div class="lab-kicker">实验 3 · 20 分钟 · 难度：中高</div>
+      <h3>找回一个被删掉的提交</h3>
+      <p class="lab-sub">沙盒里有一条被 reset 掉、分支也被删掉的功能提交。reflog 已过期，但对象还在。写脚本把它救回来。</p>
+    </div>
+    <div class="lab-body">
+      <p class="lab-broken"><span class="label">当前状态</span><code>recover.sh</code> 直接退出 1；沙盒里没有 <code>rescue</code> 分支，目标提交仍不可达。</p>
+
+      <div class="lab-grid">
+        <div>
+          <h4>任务</h4>
+          <ol class="task-list">
+            <li>在沙盒里找到信息为 <code>feature: add secret</code> 的提交。</li>
+            <li>确认它的 tree 里有 <code>feature.txt</code>，内容为 <code>recovered\n</code>。</li>
+            <li>创建分支 <code>rescue</code> 指向它；<strong>不要</strong>移动 <code>main</code>。</li>
+            <li>把证据写进 <code>notes.md</code>：用了什么命令、SHA、为什么是它。</li>
+          </ol>
+          <h4>交付物</h4>
+          <div class="pathline"><code>course/work/lab-recover/recover.sh</code><button class="copy" data-copy="course/work/lab-recover/recover.sh">复制路径</button></div>
+          <div class="pathline"><code>course/work/lab-recover/notes.md</code><button class="copy" data-copy="course/work/lab-recover/notes.md">复制路径</button></div>
+          <h4>约束</h4>
+          <ul>
+            <li>脚本在沙盒仓库根目录运行。</li>
+            <li>不能使用 <code>git reflog</code> 作为唯一证据（检查器会清空 reflog）。</li>
+            <li>可以创建临时文件，但最终只保留 <code>rescue</code> 分支。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>只读预览</h4>
+          <div class="lab-preview"><pre>#!/bin/sh
+# 在沙盒仓库根目录运行。
+set -eu
+
+# TODO 1: 列出不可达对象
+# TODO 2: 找到 message 为 feature: add secret 的提交
+# TODO 3: 核对 feature.txt 内容
+# TODO 4: git branch rescue &lt;sha&gt;
+
+echo "not implemented" &gt;&amp;2
+exit 1</pre></div>
+          <div class="lab-actions">
+            <button type="button" class="btn" data-check>检查我的实验</button>
+            <span class="lab-status">检查器会重建一个同样的沙盒</span>
+          </div>
+          <div class="lab-results" hidden></div>
+        </div>
+      </div>
+
+      <details class="hints">
+        <summary>三级提示（先自己想，卡住再展开）</summary>
+        <div class="hint"><b>提示 1 · 找候选</b><code>git fsck --lost-found</code> 会列出 <code>dangling commit &lt;sha&gt;</code>；沙盒里不止一个。</div>
+        <div class="hint"><b>提示 2 · 辨认</b>对每个候选运行 <code>git cat-file -p &lt;sha&gt;</code>，看提交信息；目标信息是 <code>feature: add secret</code>。</div>
+        <div class="hint"><b>提示 3 · 固定证据</b>用 <code>git branch rescue &lt;sha&gt;</code> 建引用；在 <code>notes.md</code> 里写清命令、SHA、以及它为什么不是另一个 dangling 提交。</div>
+      </details>
+
+      <p class="lab-foot">终端检查：<code>node course/check.mjs lab-recover</code>；重建沙盒：<code>node course/lab.mjs start lab-recover</code>。参考答案在检查器里。</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<section class="module" id="m6" data-num="6" data-title="打包与传输">
+<div class="wrap">
+  <header class="module-head">
+    <div class="module-num">06</div>
+    <h2>打包与传输</h2>
+    <p class="lede">最后一层：对象怎么被压进一个 pack，clone/fetch 又怎么只传缺少的部分。这一模块是可选扩展，不配实验；读完你就有了继续读 <code>Documentation/technical/</code> 的地图。</p>
+  </header>
+
+  <section class="section" id="s6-1" data-title="6.1 pack 内部" data-read="6" data-check="4" data-next="下一节：clone 与 fetch">
+    <span class="section-label">模块 6 · 小节 1</span>
+    <h3>pack 内部</h3><span class="timechip">阅读 ≈6 分钟 · 检查 ≈4 分钟</span>
+
+    <div class="micro" data-micro data-good="a">
+      <p class="micro-q"><span class="tag">回忆</span>pack 旁边哪个文件提供“哈希 → 偏移”的查找？</p>
+      <div class="micro-actions">
+        <button data-pick="a">.idx</button>
+        <button data-pick="b">.bitmap</button>
+        <button data-pick="c">.pack</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="对。idx 是查找表；pack 只存对象本身。" data-msg-b="bitmap 加速可达性判断，不提供单对象查找。" data-msg-c="pack 存对象记录，不提供按哈希索引。"></div>
+    </div>
+
+    <div class="screen">
+      <p>pack 的对象记录不是定长结构。每个对象开头是一个变长头：最高位表示“还有后续字节”，接着 3 位是类型，最低 4 位是 size 的低 4 位；后续每字节再贡献 7 位 size。</p>
+      <figure class="diagram">
+        <div class="diagram-note">一个对象记录的编码</div>
+        <div class="mermaid">
+flowchart LR
+  A["首字节<br/>1 位继续 + 3 位类型 + 4 位 size"] --> B{"继续位 = 1？"}
+  B -->|"是"| C["下一字节<br/>1 位继续 + 7 位 size"]
+  C --> B
+  B -->|"否"| D["按类型读数据"]
+  D --> E{"类型是 delta？"}
+  E -->|"OFS_DELTA"| F["读负偏移，找同 pack 的 base"]
+  E -->|"REF_DELTA"| G["读 base OID，可能跨 pack"]
+  E -->|"普通"| H["zlib 解压内容"]
+        </div>
+        <figcaption>类型只有 3 位，所以 8 种：commit/tree/blob/tag、两种 <abbr class="term" tabindex="0" data-def="delta：pack 中保存“相对某个 base 的差异”的对象；读取时要先取 base，再应用差异。">delta</abbr>、保留值。size 是解压后的大小。</figcaption>
+        <details><summary>图源</summary><pre>flowchart LR
+  A[first byte] --> B{continuation?}
+  B -->|yes| C[next byte 7 bits]
+  C --> B
+  B -->|no| D[read payload]
+  D --> E{delta?}
+  E -->|OFS| F[negative offset base]
+  E -->|REF| G[base oid]
+  E -->|plain| H[inflate]</pre></details>
+      </figure>
+    </div>
+
+    <div class="screen">
+      <h4>idx 与 bitmap</h4>
+      <p><code>.idx</code> v2 的开头是魔法 <code>\377tOc</code> 和版本号，然后是 256 项 fanout：第 i 项表示“首字节 ≤ i 的对象有多少个”。二分时先用首字节定位区间，再在区间内查 OID 表。</p>
+      <div class="code">
+        <div class="code-head"><span>Documentation/technical/pack-format.txt · idx v2</span></div>
+        <pre><code>    fanout: 256 * 4 bytes
+        fanout[i] = number of objects whose first byte is &lt;= i
+
+    object names: N * hash_size
+        sorted by object name
+
+    CRC32: N * 4 bytes
+    offsets: N * 4 bytes
+    large offsets: M * 8 bytes
+    pack checksum: hash_size
+    idx checksum: hash_size</code></pre>
+      </div>
+      <div class="translate">
+        <div class="t-code">fanout[i] = number of objects whose first byte is &lt;= i</div>
+        <div class="t-en"><p><b>前缀计数：</b><code>fanout[0x8d] - fanout[0x8c]</code> 就是首字节为 <code>0x8d</code> 的对象数量；两个相邻项直接给出二分区间。</p></div>
+      </div>
+      <p><code>.bitmap</code> 是另一份可选文件：为某些提交预计算“可达对象集合”的位图。它让 fetch/push 在判断“对方已经有哪些对象”时不必逐个走图，是大型仓库传输提速的关键之一。</p>
+      <figure class="diagram">
+        <div class="diagram-note">delta 链与重新打包</div>
+        <div class="mermaid">
+flowchart LR
+  B["base 完整对象"] --> D1["delta 1"]
+  D1 --> D2["delta 2"]
+  D2 --> D3["delta 3"]
+  D3 -.->|"链太长，读取变慢"| R["repack：限制深度"]
+  R --> B2["新的 base + 更短链"]
+        </div>
+        <figcaption>delta 越深越省空间，但读一个对象要追完整条链；<code>pack.depth</code> 就是在两者之间取平衡。</figcaption>
+        <details><summary>图源</summary><pre>flowchart LR
+  base --> d1 --> d2 --> d3
+  d3 -. too deep .-> repack
+  repack --> newbase</pre></details>
+      </figure>
+    </div>
+
+    <div class="micro" data-micro data-good="b">
+      <p class="micro-q"><span class="tag">辨析</span>OFS_DELTA 与 REF_DELTA 的核心区别是：</p>
+      <div class="micro-actions">
+        <button data-pick="a">前者存内容，后者存差异</button>
+        <button data-pick="b">前者用 pack 内偏移指 base，后者用对象哈希指 base</button>
+        <button data-pick="c">前者只能用于 commit，后者只能用于 blob</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="两者都是 delta，都存差异。" data-msg-b="对。OFS 更省空间（偏移比哈希短），但不能跨 pack；REF 可以指向别的 pack 里的 base。"></div>
+    </div>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span>pack 中对象头里的 size 表示：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-1-q1" value="a"><span><span class="opt-key">A</span> 压缩后占用的字节数<span class="opt-why">压缩后长度由 zlib 流自身给出。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s6-1-q1" value="b"><span><span class="opt-key">B</span> 解压后对象的字节数<span class="opt-why">对。它用于分配缓冲区，也是 delta 应用时的目标大小。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-1-q1" value="c"><span><span class="opt-key">C</span> 对象在 idx 中的序号<span class="opt-why">序号由排序位置决定，不写在对象头。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>“解压后大小”是读 pack 时最先需要知道的数字。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>idx 的 fanout 表作用是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-1-q2" value="a"><span><span class="opt-key">A</span> 存每个对象的 CRC<span class="opt-why">CRC 在单独的数组里。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s6-1-q2" value="b"><span><span class="opt-key">B</span> 按首字节快速缩小 OID 的查找区间<span class="opt-why">对。fanout[i] 是首字节 ≤ i 的对象计数，两个相邻项就给出区间边界，再在区间内二分。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-1-q2" value="c"><span><span class="opt-key">C</span> 记录 pack 的版本<span class="opt-why">版本在 idx 头部。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>256 项换来的是一次廉价的前置定位。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>delta 链过深的主要代价是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-1-q3" value="a"><span><span class="opt-key">A</span> pack 文件变大<span class="opt-why">链深通常让文件更小。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s6-1-q3" value="b"><span><span class="opt-key">B</span> 读一个对象要依次解压多个 base，CPU 与延迟上升<span class="opt-why">对。所以 repack 会限制深度，并用 bitmap 等辅助结构减少走图。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-1-q3" value="c"><span><span class="opt-key">C</span> 对象哈希会改变<span class="opt-why">存储方式不改变对象哈希。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>空间与读取延迟的权衡，由 <code>pack.depth</code> 等参数控制。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈2 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s6-1">
+          <label class="sa-label" for="sa-s6-1">用 3–4 句话解释：为什么 pack 需要 idx，而 idx 又需要 fanout？如果去掉 fanout，查找会慢在哪一步？</label>
+          <textarea id="sa-s6-1" rows="4" placeholder="从“有序表 + 二分”开始……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine">复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>pack 把对象紧凑地放在一起并大量使用 delta，物理顺序与哈希顺序无关，所以需要一个 idx 把哈希映射到偏移。idx 里的 OID 表按哈希排序，可以二分；但如果直接在几百万项上做 32 次比较，缓存局部性很差。fanout 用 256 个前缀计数先把范围缩到“首字节相同”的小区间，再在区间内二分，显著减少比较次数与随机访存。去掉 fanout 仍然正确，只是每次查找都要在整张表上反复跳转。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我说出了 pack 物理顺序与哈希顺序无关。</label>
+            <label><input type="checkbox"> 我说出了 idx 提供哈希 → 偏移。</label>
+            <label><input type="checkbox"> 我解释了 fanout 缩小二分区间。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>pack 对象头是变长编码：类型 + 解压后大小。</li>
+        <li>idx = fanout + 排序 OID + CRC + 偏移；bitmap 加速可达性判断。</li>
+        <li>delta 深度是空间与读取延迟的权衡。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="s6-2" data-title="6.2 clone 与 fetch" data-read="6" data-check="4" data-next="继续读：technical 文档">
+    <span class="section-label">模块 6 · 小节 2</span>
+    <h3>clone 与 fetch</h3><span class="timechip">阅读 ≈6 分钟 · 检查 ≈4 分钟</span>
+
+    <div class="micro" data-micro data-good="a">
+      <p class="micro-q"><span class="tag">回忆</span>fetch 协商的核心是哪一对消息？</p>
+      <div class="micro-actions">
+        <button data-pick="a">want / have</button>
+        <button data-pick="b">username / password</button>
+        <button data-pick="c">depth / filter</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="对。want 要哪些 tip，have 声明已有哪些，服务器只发差集。" data-msg-b="认证是另一个层。" data-msg-c="depth/filter 是可选参数，不是核心协商。"></div>
+    </div>
+
+    <div class="screen">
+      <p>传输的本质是两句话：“我有哪些引用”和“我要哪些对象”。客户端先拿到对方的引用列表，再说“我要这些 tip，但我已经有这些”，服务器据此算出差集并生成一个 pack。</p>
+      <figure class="diagram">
+        <div class="diagram-note">一次 clone 的往返</div>
+        <div class="mermaid">
+sequenceDiagram
+  participant C as 客户端
+  participant S as 服务器
+  C->>S: GET info/refs?service=git-upload-pack
+  S-->>C: 引用广告（main、tags、capabilities）
+  C->>S: want &lt;tip&gt; + have &lt;local&gt; + done
+  S->>S: 计算可达差集，生成 pack
+  S-->>C: packfile
+  C->>C: index-pack 建 idx
+  C->>C: 更新 refs，checkout 工作区
+        </div>
+        <figcaption>clone 是“空仓库的 fetch + checkout”；真正省流量的是 have/want 协商，而不是压缩算法本身。</figcaption>
+        <details><summary>图源</summary><pre>sequenceDiagram
+  C->>S: info/refs
+  S-->>C: ref advertisement
+  C->>S: want + have + done
+  S-->>C: packfile
+  C->>C: index-pack + checkout</pre></details>
+      </figure>
+    </div>
+
+    <div class="screen">
+      <h4>协议 v2 改了什么</h4>
+      <p>v2 把“引用广告”和“取对象”拆成两个命令：<code>ls-refs</code> 与 <code>fetch</code>。客户端可以先问引用，再决定要什么；服务器也能按 prefix 过滤引用，减少大仓库的广告体积。</p>
+      <p>传输层还有一层常被忽略的选择：<code>file://</code>、ssh、https 都只是“怎么搬字节”，pack 的生成与校验仍在两端各自完成。</p>
+      <figure class="diagram">
+        <div class="diagram-note">从传输到工作区</div>
+        <div class="mermaid">
+flowchart LR
+  A["引用广告"] --> B["协商 want / have"]
+  B --> C["服务器生成 pack"]
+  C --> D["客户端 index-pack"]
+  D --> E["更新远端跟踪引用"]
+  E --> F["checkout：读 tree，写文件"]
+  F --> G["索引写入 stat"]
+        </div>
+        <figcaption>pack 落地不等于工作区有文件；checkout 是另一段：读 tree、写工作区、填索引。</figcaption>
+        <details><summary>图源</summary><pre>flowchart LR
+  A[advertise] --> B[negotiate]
+  B --> C[server pack]
+  C --> D[index-pack]
+  D --> E[update refs]
+  E --> F[checkout]
+  F --> G[index stat]</pre></details>
+      </figure>
+      <div class="callout">
+        <span class="label">接下来读什么</span>
+        <p>按依赖顺序：<code>index-format.txt</code> → <code>pack-format.txt</code> → <code>pack-protocol.txt</code> → <code>commit-graph.txt</code>。每读一份，回到本课程对应的模块，把图上的一个盒子替换成文档里的字段。</p>
+      </div>
+    </div>
+
+    <div class="micro" data-micro data-good="c">
+      <p class="micro-q"><span class="tag">定位</span>clone 之后，工作区文件是在哪一步出现的？</p>
+      <div class="micro-actions">
+        <button data-pick="a">服务器生成 pack 时</button>
+        <button data-pick="b">index-pack 建 idx 时</button>
+        <button data-pick="c">checkout 读 tree 并写文件时</button>
+      </div>
+      <div class="micro-result" hidden data-msg-a="服务器只生成对象，不碰你的工作区。" data-msg-b="idx 只是让 pack 可查找，还没有写文件。" data-msg-c="对。checkout 遍历 tree，把 blob 写到对应路径，再把这些路径写进索引。"></div>
+    </div>
+
+    <div class="gate">
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">1</span><h4>检查理解</h4><span class="gate-time">≈2 分钟 · 不计分</span></div>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">1.</span>fetch 时，客户端发送 <code>have</code> 的主要目的是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-2-q1" value="a"><span><span class="opt-key">A</span> 声明自己的身份<span class="opt-why">身份在认证层处理。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s6-2-q1" value="b"><span><span class="opt-key">B</span> 告诉服务器哪些对象已经有了，减少传输<span class="opt-why">对。服务器从 want 的 tip 出发，跳过 have 可达的对象，只发差集。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-2-q1" value="c"><span><span class="opt-key">C</span> 请求服务器删除对象<span class="opt-why">fetch 不会删除服务器对象。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>协商的质量直接决定 pack 的大小。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">2.</span>协议 v2 相对 v0/v1 的一个关键变化是：</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-2-q2" value="a"><span><span class="opt-key">A</span> 不再使用 packfile<span class="opt-why">仍然传 pack。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s6-2-q2" value="b"><span><span class="opt-key">B</span> 把引用广告与取对象拆成 ls-refs / fetch 两个命令<span class="opt-why">对。客户端可以按需查询引用，也能按 prefix 过滤。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-2-q2" value="c"><span><span class="opt-key">C</span> 只支持 https<span class="opt-why">协议与传输方式无关。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>拆命令让“先看有什么，再决定要什么”成为可能。</p>
+        </fieldset>
+
+        <fieldset class="mc" data-mc>
+          <legend><span class="qnum">3.</span>“clone 完成”与“工作区可用”之间还差哪一步？</legend>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-2-q3" value="a"><span><span class="opt-key">A</span> 不需要，pack 落地即可<span class="opt-why">pack 只保存对象，不创建文件。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="1"><input type="radio" name="s6-2-q3" value="b"><span><span class="opt-key">B</span> checkout：按 tree 写工作区并填索引<span class="opt-why">对。对象层与工作区层是两件事，checkout 才把 blob 变成文件。</span><span class="mark"></span></span></label>
+          <label class="opt" data-correct="0"><input type="radio" name="s6-2-q3" value="c"><span><span class="opt-key">C</span> 再执行一次 fsck<span class="opt-why">fsck 是校验，不创建工作区。</span><span class="mark"></span></span></label>
+          <div class="mc-foot"><button type="button" class="btn small btn-check">检查</button><button type="button" class="btn small secondary btn-retry" hidden>再试一次</button></div>
+          <p class="mc-result" aria-live="polite"></p>
+          <p class="mc-why" hidden>这也是“裸仓库”能存在的原因：它只有对象与引用，没有 checkout。</p>
+        </fieldset>
+      </div>
+
+      <div class="gate-step">
+        <div class="gate-step-head"><span class="step-num">2</span><h4>用自己的话解释</h4><span class="gate-time">≈2 分钟 · 本地保存</span></div>
+        <div class="sa" data-sa="s6-2">
+          <label class="sa-label" for="sa-s6-2">用 3–4 句话描述一次 <code>git clone</code> 从请求到工作区可用的完整路径，并指出哪一步最可能成为大仓库的瓶颈。</label>
+          <textarea id="sa-s6-2" rows="4" placeholder="引用广告 → 协商 → pack → ……"></textarea>
+          <div class="sa-meta"><span class="wordcount">0 字</span><span class="save-status" aria-live="polite"></span><span class="spacer"></span><button type="button" class="textbtn" data-clear>清空</button></div>
+          <div class="sa-actions">
+            <button type="button" class="btn secondary small" data-reveal>查看参考答案</button>
+            <button type="button" class="textbtn" data-stuck>我卡住了</button>
+            <button type="button" class="textbtn" data-copy-mine>复制我的答案</button>
+          </div>
+          <div class="model" hidden>
+            <span class="model-kicker">参考答案</span>
+            <p>客户端先请求引用广告，拿到服务器各分支与标签的 tip；随后发送 want 与 have 进行协商，服务器从 want 出发、跳过 have 可达的对象，只生成差集 pack。客户端收到后用 index-pack 校验并建立 idx，更新远端跟踪引用，最后 checkout 按 tree 把 blob 写到工作区并填入索引。大仓库的瓶颈通常在协商与 checkout：前者要在巨大的提交图上判断“对方已有什么”，后者要为每个路径写文件并做 stat；pack 传输本身有 delta 与 bitmap 辅助。</p>
+          </div>
+          <div class="selfcheck" aria-label="自查">
+            <label><input type="checkbox"> 我按“广告 → 协商 → pack → index-pack → checkout”写全。</label>
+            <label><input type="checkbox"> 我点明了 want/have 的作用。</label>
+            <label><input type="checkbox"> 我说出了至少一个瓶颈及原因。</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="recap">
+      <h4>本小节可以带走</h4>
+      <ul>
+        <li>fetch/clone 的核心是引用广告 + want/have 协商。</li>
+        <li>pack 落地后还要 index-pack、更新引用、checkout。</li>
+        <li>协议 v2 把 ls-refs 与 fetch 拆开，支持按需查询。</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="lab" data-lab="lab-pack" id="lab-pack">
+    <div class="lab-head">
+      <div class="lab-kicker">实验 6 · 16 分钟 · 难度：中高 · 扩展（可选）</div>
+      <h3>读 <code>.pack</code> 与 <code>.idx</code> 的头</h3>
+      <p class="lab-sub">不调用 <code>git verify-pack</code>。直接读 pack 的对象数，以及 idx 的 fanout 与第一个 OID。</p>
+    </div>
+    <div class="lab-body">
+      <p class="lab-broken"><span class="label">当前状态</span><code>pack-report.py</code> 只抛出 <code>not implemented</code>；沙盒里已经有一个 repack 后的仓库。</p>
+
+      <div class="lab-grid">
+        <div>
+          <h4>任务</h4>
+          <ol class="task-list">
+            <li>找到 <code>.git/objects/pack/*.pack</code>。</li>
+            <li>读 12 字节：<code>PACK</code>、版本、对象数。</li>
+            <li>读同名 <code>.idx</code>：magic <code>\377tOc</code>、版本、256 项 fanout。</li>
+            <li>输出对象数、idx 对象数、第一个 OID。</li>
+          </ol>
+          <h4>输出格式</h4>
+          <pre class="term">{"packs":[
+  {"pack":"pack-xxxx.pack","version":2,
+   "objects":42,"idx_objects":42,
+   "first_oid":"..."}
+]}</pre>
+          <h4>交付物</h4>
+          <div class="pathline"><code>course/work/lab-pack/pack-report.py</code><button class="copy" data-copy="course/work/lab-pack/pack-report.py">复制路径</button></div>
+          <h4>约束</h4>
+          <ul>
+            <li>不能调用 git 命令。</li>
+            <li>只处理 idx v2。</li>
+            <li>沙盒至少有一个 pack；没有 pack 时输出空数组即可。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>只读预览</h4>
+          <div class="lab-preview"><pre>import glob, json, os, struct, sys
+
+repo = sys.argv[1] if len(sys.argv) &gt; 1 else "."
+packdir = os.path.join(repo, ".git", "objects", "pack")
+
+for pack in sorted(glob.glob(packdir + "/*.pack")):
+    # TODO 1: PACK + version + count
+    # TODO 2: idx magic + fanout[256]
+    # TODO 3: count = fanout[255]
+    # TODO 4: first OID at 8 + 1024
+    raise SystemExit("not implemented")</pre></div>
+          <div class="lab-actions">
+            <button type="button" class="btn" data-check>检查我的实验</button>
+            <span class="lab-status">会创建 6 个提交并 repack</span>
+          </div>
+          <div class="lab-results" hidden></div>
+        </div>
+      </div>
+
+      <details class="hints">
+        <summary>三级提示</summary>
+        <div class="hint"><b>提示 1 · pack</b><code>magic, version, count = struct.unpack("&gt;4sII", head[:12])</code>；<code>magic</code> 必须是 <code>b"PACK"</code>。</div>
+        <div class="hint"><b>提示 2 · idx 头</b>magic 是 <code>b"\377tOc"</code>，版本 2；fanout 从偏移 8 开始，共 256 个 big-endian uint32。</div>
+        <div class="hint"><b>提示 3 · 计数与首个 OID</b><code>idx_objects = fanout[255]</code>；排序后的第一个 OID 在偏移 <code>8 + 256*4</code>，取 20 字节转 hex。</div>
+      </details>
+
+      <p class="lab-foot">终端检查：<code>node course/check.mjs lab-pack</code>；恢复骨架：<code>node course/lab.mjs restore lab-pack</code>。这是扩展实验，不计入核心路径。</p>
+    </div>
+  </div>
+</div>
+</section>
+
+  </main>
+</div>
+
+<footer id="reading">
+  <div class="wrap">
+    <h3>读完这门课之后</h3>
+    <p>你现在的阅读顺序应该从“跟着一次操作走”转向“按数据结构查”。下面这条路径按依赖顺序排列，每条都指向仓库里的真实文件或文档。</p>
+    <div class="readorder">
+      <a href="https://github.com/git/git/blob/master/Documentation/technical/index-format.txt" target="_blank" rel="noopener">Documentation/technical/index-format.txt</a>
+      <a href="https://github.com/git/git/blob/master/Documentation/technical/pack-format.txt" target="_blank" rel="noopener">Documentation/technical/pack-format.txt</a>
+      <a href="https://github.com/git/git/blob/master/Documentation/technical/commit-graph.txt" target="_blank" rel="noopener">Documentation/technical/commit-graph.txt</a>
+      <a href="https://github.com/git/git/blob/master/Documentation/technical/pack-protocol.txt" target="_blank" rel="noopener">Documentation/technical/pack-protocol.txt</a>
+      <a href="https://github.com/git/git/blob/master/Documentation/technical/api-object-access.txt" target="_blank" rel="noopener">Documentation/technical/api-object-access.txt</a>
+      <a href="https://github.com/git/git/blob/master/Documentation/technical/racy-git.txt" target="_blank" rel="noopener">Documentation/technical/racy-git.txt</a>
+    </div>
+    <p class="smallprint">
+      课程源码：<code>git-src/</code>（git/git 浅克隆，提交 47fdf22）。<br>
+      页面是只读预览；实验在真实文件或真实仓库里完成。<br>
+      恢复源码：<code>node course/lab.mjs restore lab-object-meta</code>。<br>
+      本地检查：<code>node course/check.mjs &lt;lab-id&gt;</code>；启动页面：<code>node course/serve.mjs</code>。
+    </p>
+  </div>
+</footer>
+
+<script src="assets/mermaid.min.js"></script>
+<script src="main.js" defer></script>
+<script src="section-check.js" defer></script>
+<script src="lab.js" defer></script>
+</body>
+</html>
